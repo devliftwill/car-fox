@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import Nav from "@/components/Nav";
+import AskFoxButton from "@/components/AskFoxButton";
 import Logo from "@/components/Logo";
 import { CARS, getCar, money, km } from "@/lib/cars";
 
@@ -181,12 +182,9 @@ export default async function VehiclePage({
             🦊 <b style={{ color: "var(--fox)" }}>Ask the Car Fox about this car.</b> He starts the
             call already knowing this {car.model} — VIN, price, history, everything on this page.
           </p>
-          <Link
-            href={`/live?vehicle=${car.slug}`}
-            className="sq-btn sq-btn--black whitespace-nowrap !py-3.5 !px-6"
-          >
+          <AskFoxButton className="sq-btn sq-btn--black whitespace-nowrap !py-3.5 !px-6">
             Talk to the Fox about this car
-          </Link>
+          </AskFoxButton>
         </div>
       </section>
 

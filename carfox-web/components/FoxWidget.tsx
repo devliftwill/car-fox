@@ -24,8 +24,13 @@ export default function FoxWidget() {
     fetch("/api/fox-room?warm=1").catch(() => {});
   }, []);
 
-  // /live hosts the full-size fox experience already.
-  if (pathname?.startsWith("/live")) return null;
+  // Any CTA on the site can open the dock by dispatching this event
+  // (see AskFoxButton) — there's no separate full-page fox experience.
+  useEffect(() => {
+    const openDock = () => setOpen(true);
+    window.addEventListener("carfox:open", openDock);
+    return () => window.removeEventListener("carfox:open", openDock);
+  }, []);
 
   // The passcode gate is pre-login — no fox until you're inside.
   if (pathname === "/gate") return null;
