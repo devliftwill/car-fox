@@ -1,14 +1,14 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Passcode gate — the first thing an invited guest sees, so it gets the same
- * cinematic treatment as the homepage hero: ambient film loop, light type,
- * one centered action. Everything else on the site is behind this page.
+ * Passcode gate — the first thing an invited guest sees. Quiet ink-dark
+ * backdrop with a faint fox-orange glow, light type, one centered action.
+ * Everything else on the site is behind this page.
  */
 function GateForm() {
   const params = useSearchParams();
@@ -18,23 +18,6 @@ function GateForm() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [shake, setShake] = useState(false);
-
-  // Same graceful fallback as the hero: if the loop can't play, hold on the poster.
-  const vidRef = useRef<HTMLVideoElement>(null);
-  const [videoOk, setVideoOk] = useState(true);
-  useEffect(() => {
-    const v = vidRef.current;
-    if (!v) return;
-    const fail = () => setVideoOk(false);
-    v.addEventListener("error", fail);
-    const t = setTimeout(() => {
-      if (v.readyState < 2) setVideoOk(false);
-    }, 2500);
-    return () => {
-      clearTimeout(t);
-      v.removeEventListener("error", fail);
-    };
-  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -65,27 +48,10 @@ function GateForm() {
   }
 
   return (
-    <main className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-black text-white">
-      {/* Ambient film, same footage as the homepage hero */}
-      <div className="hero-media absolute inset-0" aria-hidden>
-        {videoOk ? (
-          <video
-            ref={vidRef}
-            autoPlay
-            muted
-            loop
-            playsInline
-            poster="/banner-poster.jpg"
-            src="/banner-loop.mp4"
-          />
-        ) : (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src="/banner-poster.jpg" alt="" className="hero-poster" />
-        )}
-      </div>
-      {/* Heavier scrim than the hero — the form needs the contrast */}
+    <main className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-[#0e0e0e] text-white">
+      {/* Faint fox-orange glow behind the content — keeps the ink from going flat */}
       <div
-        className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,.62),rgba(0,0,0,.44)_45%,rgba(0,0,0,.74))]"
+        className="absolute inset-0 bg-[radial-gradient(ellipse_62%_46%_at_50%_36%,rgba(212,100,42,.12),transparent_72%)]"
         aria-hidden
       />
 
