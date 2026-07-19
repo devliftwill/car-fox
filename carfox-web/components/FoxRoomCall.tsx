@@ -38,6 +38,9 @@ export default function FoxRoomCall({
   const [muted, setMuted] = useState(false);
   const mutedRef = useRef(false);
   const [tipIdx, setTipIdx] = useState(0);
+  // Match the frame to the fox's real dimensions so object-cover never crops
+  // his sides. Defaults to the portrait avatar ratio until metadata lands.
+  const [videoAspect, setVideoAspect] = useState("2 / 3");
   const videoRef = useRef<HTMLVideoElement>(null);
   const callRef = useRef<DailyCall | null>(null);
   const startingRef = useRef(false); // guards double-start (React StrictMode, double-clicks)
@@ -52,6 +55,25 @@ export default function FoxRoomCall({
     const t = setTimeout(() => void start(), 150);
     return () => clearTimeout(t);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep the frame locked to the video's true aspect ratio. Media elements
+  // fire "resize" whenever the incoming track's dimensions change, so the
+  // frame follows the fox even if LemonSlice renegotiates resolution.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const sync = () => {
+      if (v.videoWidth && v.videoHeight) {
+        setVideoAspect(`${v.videoWidth} / ${v.videoHeight}`);
+      }
+    };
+    v.addEventListener("loadedmetadata", sync);
+    v.addEventListener("resize", sync);
+    return () => {
+      v.removeEventListener("loadedmetadata", sync);
+      v.removeEventListener("resize", sync);
+    };
+  }, []);
 
   // Rotate the playful boot messages while connecting.
   useEffect(() => {
@@ -203,8 +225,9 @@ export default function FoxRoomCall({
   return (
     <div className={compact ? "px-4 pb-4 pt-3 text-center" : "mx-auto max-w-3xl px-6 text-center"}>
       <div
-        className={`relative mx-auto aspect-[2/3] w-full overflow-hidden bg-neutral-900 shadow-2xl ${
-          compact ? "max-w-[260px] rounded-xl" : "max-w-[420px] rounded-2xl"
+        style={{ aspectRatio: videoAspect, maxHeight: "80dvh" }}
+        className={`relative mx-auto w-full overflow-hidden bg-neutral-900 shadow-2xl ${
+          compact ? "max-w-[260px] rounded-xl" : "max-w-[440px] rounded-2xl"
         }`}
       >
         <video ref={videoRef} autoPlay playsInline className="h-full w-full object-cover" />
