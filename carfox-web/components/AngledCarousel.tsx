@@ -51,7 +51,7 @@ export default function AngledCarousel() {
 
   return (
     <section
-      className="angled relative z-20 -mt-[21vh]"
+      className="angled relative z-20 -mt-[12vh] overflow-x-clip sm:-mt-[21vh]"
       aria-label="Featured inventory"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}

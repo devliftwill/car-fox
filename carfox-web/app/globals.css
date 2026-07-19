@@ -12,7 +12,7 @@
   --fox: #d4642a;
 }
 
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; overflow-x: clip; }
 body {
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   background: var(--paper);

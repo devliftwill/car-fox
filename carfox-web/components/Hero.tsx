@@ -49,7 +49,7 @@ export default function Hero() {
   };
 
   return (
-    <header className="relative flex h-[100svh] min-h-[640px] items-center justify-center overflow-hidden bg-black text-white">
+    <header className="relative flex h-[68svh] min-h-[420px] items-center justify-center overflow-hidden bg-black text-white sm:h-[100svh] sm:min-h-[640px]">
       <div className="hero-media absolute inset-0">
         {ok ? (
           <video
