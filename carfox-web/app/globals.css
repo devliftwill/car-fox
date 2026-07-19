@@ -123,12 +123,14 @@ body {
     right: 14px; bottom: calc(14px + env(safe-area-inset-bottom, 0px));
     width: 56px; height: 56px;
   }
-  /* Full-width (with margins) so the panel uses the small screen well and
-     clears the iOS home indicator. */
+  /* Floating corner card — roomy enough for the fox + all call controls, but
+     capped so a good slice of the page stays visible around it. Never a
+     full-screen takeover. Body scrolls if a short screen can't fit it all. */
   .fox-dock-panel {
-    right: 10px; left: 10px; width: auto;
-    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
-    max-height: min(calc(100dvh - 24px - env(safe-area-inset-bottom, 0px)), 640px);
+    right: 12px; left: auto;
+    width: min(80vw, 320px);
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    max-height: min(72dvh, 560px);
   }
 }
 
