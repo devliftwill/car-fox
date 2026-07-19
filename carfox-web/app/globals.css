@@ -96,16 +96,22 @@ body {
 .fox-dock-panel {
   position: fixed; right: 16px; bottom: 16px; z-index: 75;
   width: min(92vw, 340px);
+  /* Never taller than the viewport, so the call controls stay on-screen
+     (dvh tracks mobile browser chrome; the body scrolls if it must). */
+  max-height: min(78dvh, 620px);
+  display: flex; flex-direction: column;
   background: #fff; border: 1px solid var(--line); border-radius: 18px;
   box-shadow: 0 30px 80px rgba(0,0,0,.35);
   overflow: hidden;
   animation: nudge-in .35s cubic-bezier(.2,.8,.3,1) both;
 }
 .fox-dock-head {
+  flex: 0 0 auto;
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 16px; border-bottom: 1px solid var(--line);
   font-size: 14px; letter-spacing: -.01em;
 }
+.fox-dock-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .fox-dock-head button {
   background: none; border: none; cursor: pointer;
   font-size: 15px; color: var(--mut); padding: 2px 6px;
@@ -113,8 +119,17 @@ body {
 .fox-dock-head button:hover { color: #0e0e0e; }
 .fox-dock-panel .sq-btn { padding: 12px 18px !important; font-size: 12px !important; }
 @media (max-width: 640px) {
-  .fox-dock-btn { right: 14px; bottom: 14px; width: 56px; height: 56px; }
-  .fox-dock-panel { right: 10px; bottom: 10px; }
+  .fox-dock-btn {
+    right: 14px; bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    width: 56px; height: 56px;
+  }
+  /* Full-width (with margins) so the panel uses the small screen well and
+     clears the iOS home indicator. */
+  .fox-dock-panel {
+    right: 10px; left: 10px; width: auto;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    max-height: min(calc(100dvh - 24px - env(safe-area-inset-bottom, 0px)), 640px);
+  }
 }
 
 /* Boot loader — fox avatar with pulse rings while the sidecar spins up */

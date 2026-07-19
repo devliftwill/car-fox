@@ -27,6 +27,9 @@ export default function FoxWidget() {
   // /live hosts the full-size fox experience already.
   if (pathname?.startsWith("/live")) return null;
 
+  // The passcode gate is pre-login — no fox until you're inside.
+  if (pathname === "/gate") return null;
+
   const vehicleSlug = pathname?.startsWith("/vehicles/")
     ? pathname.split("/")[2]
     : undefined;
@@ -60,7 +63,9 @@ export default function FoxWidget() {
               ✕
             </button>
           </div>
-          <FoxRoomCall key={pathname} vehicleSlug={vehicleSlug} compact autoStart />
+          <div className="fox-dock-body">
+            <FoxRoomCall key={pathname} vehicleSlug={vehicleSlug} compact autoStart />
+          </div>
         </div>
       )}
     </>
