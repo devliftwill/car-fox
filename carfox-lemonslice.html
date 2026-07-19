@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Car Fox · Live (LemonSlice)</title>
+<style>
+  :root{ --bg:#f5f4f1; --card:#fff; --ink:#0a0a0a; --muted:#6b6b6b; --line:#e7e5e0; --fox:#d4642a; --accent:#1667c8;
+    --shadow:0 20px 60px rgba(20,20,30,.12), 0 2px 8px rgba(20,20,30,.06); }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 28px;max-width:980px;margin:0 auto}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px;letter-spacing:-.02em}
+  .brand .mark{width:30px;height:30px;border-radius:9px;background:var(--fox);display:flex;align-items:center;justify-content:center;font-size:16px}
+  .chip{font-size:13px;color:var(--muted);background:var(--card);border:1px solid var(--line);padding:7px 13px;border-radius:999px}
+  main{max-width:980px;margin:0 auto;padding:8px 28px 60px;text-align:center}
+  .eyebrow{text-transform:uppercase;letter-spacing:.18em;font-size:12px;font-weight:600;color:var(--muted);margin-top:18px}
+  h1{font-size:clamp(30px,5vw,52px);line-height:1.03;letter-spacing:-.03em;margin:12px 0 0;font-weight:800}
+  h1 .fox{color:var(--fox)}
+  .lede{color:var(--muted);font-size:15px;margin-top:12px}
+  .stagecard{margin:28px auto 0;max-width:720px;background:var(--card);border:1px solid var(--line);border-radius:28px;box-shadow:var(--shadow);padding:26px;min-height:420px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px}
+  lemon-slice-widget{width:100%;min-height:480px;display:block}
+  .setup{max-width:560px;margin:0 auto;text-align:left}
+  .setup h2{font-size:13px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700}
+  .setup ol{font-size:14px;line-height:1.7;color:#333;padding-left:20px}
+  .setup code{background:#e7e4dd;padding:1px 6px;border-radius:6px;font-size:12.5px}
+  .idrow{display:flex;gap:10px;margin-top:14px}
+  .idrow input{flex:1;border:1px solid var(--line);border-radius:999px;padding:13px 18px;font-size:14px;outline:none;font-family:inherit;background:#fff}
+  .idrow button{border:none;background:var(--ink);color:#fff;border-radius:999px;padding:0 22px;font-weight:700;cursor:pointer;font-family:inherit;font-size:14px}
+  .hint{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="mark">🦊</span> Car Fox</div>
+    <div class="chip">LemonSlice × ElevenLabs</div>
+  </div>
+
+  <main>
+    <div class="eyebrow">Real-time · Video call</div>
+    <h1>Talk to the <span class="fox">Car&nbsp;Fox</span></h1>
+    <div class="lede">A live, animated Car Fox you can actually converse with — powered by LemonSlice video + ElevenLabs voice.</div>
+
+    <div class="stagecard" id="stage">
+      <div class="setup" id="setup">
+        <h2>One-time setup</h2>
+        <ol>
+          <li>Create an account at <a href="https://lemonslice.com" target="_blank" rel="noopener">lemonslice.com</a> (Starter plan).</li>
+          <li>In their app, create an agent: upload <code>carfox-avatar.png</code> (in this folder — it already matches their image guidelines: mouth open, teeth visible, hands in frame).</li>
+          <li>Set the personality/voice — connect your ElevenLabs agent there for the voice layer.</li>
+          <li>Copy the <b>agent ID</b> and paste it below.</li>
+        </ol>
+        <div class="idrow">
+          <input id="agentId" type="text" placeholder="paste your LemonSlice agent ID…" />
+          <button id="go">Start</button>
+        </div>
+        <div class="hint">The ID is saved in this browser only. Once set, this page goes straight to the live Car Fox call. Tip: after signing in to lemonslice.com in Chrome, Claude can drive the agent-creation steps for you.</div>
+      </div>
+    </div>
+  </main>
+
+<script>
+  const DEFAULT_AGENT_ID = "agent_a5be73d0ae81c38d"; // Car Fox agent (LemonSlice)
+  const saved = localStorage.getItem("ls_agent_id") || DEFAULT_AGENT_ID;
+  const stage = document.getElementById("stage");
+  function mountWidget(id){
+    stage.innerHTML = "";
+    const w = document.createElement("lemon-slice-widget");
+    w.setAttribute("agent-id", id);
+    stage.appendChild(w);
+    const s = document.createElement("script");
+    s.type = "module";
+    s.src = "https://unpkg.com/@lemonsliceai/lemon-slice-widget";
+    document.body.appendChild(s);
+    const reset = document.createElement("div");
+    reset.className = "hint";
+    reset.style.marginTop = "10px";
+    reset.innerHTML = '<a href="#" id="resetId">use a different agent ID</a>';
+    stage.appendChild(reset);
+    document.getElementById("resetId").onclick = (e)=>{ e.preventDefault(); localStorage.removeItem("ls_agent_id"); location.reload(); };
+  }
+  if(saved){ mountWidget(saved); }
+  document.addEventListener("click",(e)=>{
+    if(e.target && e.target.id === "go"){
+      const v = document.getElementById("agentId").value.trim();
+      if(v){ localStorage.setItem("ls_agent_id", v); mountWidget(v); }
+    }
+  });
+</script>
+</body>
+</html>

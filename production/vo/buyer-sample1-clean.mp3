@@ -1,0 +1,1 @@
+{"detail":{"type":"validation_error","code":"audio_too_short","message":"Audio duration is 0.99 seconds, which is below the minimum of 4.6 seconds.","status":"invalid_audio_duration","request_id":"763da741f0a8c664f9c3252eb7f2e016","param":"audio"}}

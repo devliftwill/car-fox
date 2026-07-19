@@ -1,0 +1,275 @@
+@import "tailwindcss";
+
+/* ---------- Squarespace-derived design tokens ----------
+   H1: light (300), tight tracking (-0.055em), Helvetica family
+   Buttons: sharp corners, 22x32 padding, 14px, 500, uppercase
+--------------------------------------------------------- */
+:root {
+  --ink: #0e0e0e;
+  --paper: #ffffff;
+  --mut: #6f6f6f;
+  --line: #e7e7e4;
+  --fox: #d4642a;
+}
+
+html { scroll-behavior: smooth; }
+body {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Type */
+.sq-h1 {
+  font-weight: 300;
+  letter-spacing: -0.055em;
+  line-height: 1.02;
+  font-size: clamp(44px, 6.2vw, 96px);
+}
+.sq-h2 {
+  font-weight: 300;
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+  font-size: clamp(32px, 4.2vw, 64px);
+}
+.sq-kicker {
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+/* Buttons — Squarespace spec: radius 0, pad 22/32, 14px, 500, uppercase */
+.sq-btn {
+  display: inline-block;
+  padding: 22px 32px;
+  font-size: 14px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background .18s, color .18s, border-color .18s;
+  border-radius: 0;
+}
+.sq-btn--white { background: #fff; color: #000; }
+.sq-btn--white:hover { background: #e9e9e6; }
+.sq-btn--black { background: #0e0e0e; color: #fff; border-color: #0e0e0e; }
+.sq-btn--black:hover { background: #000; }
+.sq-btn--ghost { background: transparent; color: #fff; border-color: rgba(255,255,255,.6); }
+.sq-btn--ghost:hover { border-color: #fff; }
+
+/* Hero media */
+.hero-media video, .hero-media img {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+}
+.hero-poster { animation: kenburns 26s ease-in-out infinite alternate; }
+@keyframes kenburns { from { transform: scale(1); } to { transform: scale(1.1); } }
+
+/* Car Fox dock — floating button + compact live-call panel (site-wide) */
+.fox-dock-btn {
+  position: fixed; right: 20px; bottom: 20px; z-index: 70;
+  width: 64px; height: 64px; border-radius: 50%;
+  padding: 0; border: 2px solid #fff; background: #fff;
+  cursor: pointer;
+  box-shadow: 0 14px 40px rgba(0,0,0,.28);
+  animation: nudge-in .5s cubic-bezier(.2,.8,.3,1) both;
+}
+.fox-dock-btn img {
+  width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block;
+  position: relative; z-index: 2;
+}
+.fox-dock-rings span {
+  position: absolute; inset: -2px; border-radius: 50%;
+  border: 1.5px solid rgba(212,100,42,.6);
+  animation: pulse-ring 2.8s cubic-bezier(.2,.6,.36,1) infinite;
+}
+.fox-dock-rings span:nth-child(2) { animation-delay: 1.4s; }
+.fox-dock-label {
+  position: absolute; right: 76px; top: 50%; transform: translateY(-50%);
+  white-space: nowrap; background: #0e0e0e; color: #fff;
+  font-size: 12.5px; font-weight: 500; padding: 9px 13px; border-radius: 9px;
+  opacity: 0; transition: opacity .18s; pointer-events: none; z-index: 2;
+}
+.fox-dock-btn:hover .fox-dock-label { opacity: 1; }
+.fox-dock-panel {
+  position: fixed; right: 16px; bottom: 16px; z-index: 75;
+  width: min(92vw, 340px);
+  background: #fff; border: 1px solid var(--line); border-radius: 18px;
+  box-shadow: 0 30px 80px rgba(0,0,0,.35);
+  overflow: hidden;
+  animation: nudge-in .35s cubic-bezier(.2,.8,.3,1) both;
+}
+.fox-dock-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+  font-size: 14px; letter-spacing: -.01em;
+}
+.fox-dock-head button {
+  background: none; border: none; cursor: pointer;
+  font-size: 15px; color: var(--mut); padding: 2px 6px;
+}
+.fox-dock-head button:hover { color: #0e0e0e; }
+.fox-dock-panel .sq-btn { padding: 12px 18px !important; font-size: 12px !important; }
+@media (max-width: 640px) {
+  .fox-dock-btn { right: 14px; bottom: 14px; width: 56px; height: 56px; }
+  .fox-dock-panel { right: 10px; bottom: 10px; }
+}
+
+/* Boot loader — fox avatar with pulse rings while the sidecar spins up */
+.fox-boot-avatar {
+  position: relative; width: 88px; height: 88px;
+}
+.fox-boot-avatar img {
+  width: 100%; height: 100%; border-radius: 50%; object-fit: cover;
+  position: relative; z-index: 2; display: block;
+  animation: fox-breathe 2.2s ease-in-out infinite;
+}
+.fox-boot-avatar > span {
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.55);
+  animation: pulse-ring 2.4s cubic-bezier(.2,.6,.36,1) infinite;
+}
+.fox-boot-avatar > span:nth-child(2) { animation-delay: 1.2s; }
+@keyframes fox-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+/* Fox invitation nudge (sits above the widget bubble) */
+.fox-nudge {
+  position: fixed; right: 18px; bottom: 245px; z-index: 60;
+  display: flex; align-items: center; gap: 12px;
+  background: #fff; color: #0e0e0e;
+  border: 1px solid var(--line);
+  padding: 12px 18px 12px 12px; border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.22);
+  cursor: pointer; text-align: left;
+  animation: nudge-in .6s cubic-bezier(.2,.8,.3,1) both, nudge-bob 3s ease-in-out 1s infinite;
+}
+.fox-nudge:hover { box-shadow: 0 22px 60px rgba(0,0,0,.3); }
+.fox-nudge-emoji { font-size: 26px; }
+.fox-nudge b { display: block; font-size: 14.5px; letter-spacing: -.01em; }
+.fox-nudge small { display: block; font-size: 12px; color: var(--mut); margin-top: 2px; }
+@keyframes nudge-in { from { opacity: 0; transform: translateY(14px) scale(.95); } to { opacity: 1; transform: none; } }
+@keyframes nudge-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+
+/* Play CTA — pulsing centered play button */
+.play-cta { position: relative; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; background: none; border: none; }
+.play-disc {
+  position: relative; z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  width: 92px; height: 92px; border-radius: 50%;
+  background: #fff; color: #0e0e0e;
+  transition: transform .25s ease;
+  padding-left: 6px;
+}
+.play-cta:hover .play-disc { transform: scale(1.08); }
+.play-rings span {
+  position: absolute; inset: 0; margin: auto;
+  width: 92px; height: 92px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.65);
+  animation: pulse-ring 2.6s cubic-bezier(.2,.6,.36,1) infinite;
+}
+.play-rings span:nth-child(2) { animation-delay: 1.3s; }
+@keyframes pulse-ring {
+  0%   { transform: scale(1); opacity: .8; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+@media (max-width: 640px) {
+  .play-disc { width: 76px; height: 76px; }
+  .play-rings span { width: 76px; height: 76px; }
+}
+
+/* Mobile nav compression — keep the CTA fully on-screen on small phones */
+@media (max-width: 640px) {
+  nav { padding: 14px 16px !important; }
+  nav a.sq-btn { padding: 10px 14px !important; font-size: 11.5px !important; }
+  .fox-nudge { right: 12px; bottom: 205px; padding: 10px 14px 10px 10px; }
+  .fox-nudge b { font-size: 13.5px; }
+  .fox-nudge small { font-size: 11px; }
+}
+
+/* Angled carousel — Squarespace homepage pattern */
+:root { --acw: min(46vw, 640px); } /* card width, shared by layout + transforms */
+@media (max-width: 768px) { :root { --acw: min(80vw, 560px); } }
+.angled-stage {
+  position: relative;
+  height: clamp(280px, 30vw, 430px);
+  width: 100%;
+  overflow: visible;
+}
+@media (max-width: 768px) {
+  .angled-stage { height: calc(var(--acw) * 0.625 + 44px); min-height: 0; }
+}
+.angled-card {
+  position: absolute; left: 50%; top: 0;
+  width: var(--acw);
+  border-radius: 14px;
+  transform-origin: center center;
+  transition: transform .8s cubic-bezier(.25,.8,.25,1), opacity .8s ease;
+  display: block; overflow: hidden; background: #111;
+  box-shadow: 0 24px 60px rgba(0,0,0,.25);
+  will-change: transform;
+}
+.angled-card img {
+  width: 100%; aspect-ratio: 16/10; object-fit: cover; display: block;
+}
+.angled-card .ac-cap {
+  position: absolute; inset: auto 0 0 0; padding: 26px 22px 16px;
+  background: linear-gradient(0deg, rgba(0,0,0,.55), transparent);
+  color: #fff; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;
+  font-size: 14px; font-weight: 500;
+  opacity: 0; transition: opacity .5s ease;
+}
+@media (max-width: 768px) {
+  .angled-card .ac-cap { padding: 18px 14px 11px; font-size: 12.5px; }
+}
+.angled-card.is-active .ac-cap { opacity: 1; }
+.angled-card .ac-price { opacity: .85; }
+
+/* Marquee — big cards, continuous slide, pause on hover */
+.marquee { overflow: hidden; }
+.marquee-track {
+  display: flex; gap: 28px; width: max-content;
+  animation: marquee 55s linear infinite;
+  will-change: transform;
+}
+.marquee:hover .marquee-track { animation-play-state: paused; }
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.marquee-track { gap: 24px; }
+.marquee-card {
+  width: min(46vw, 640px); flex: 0 0 auto;
+  border-radius: 8px; overflow: hidden; background: #111;
+  box-shadow: 0 24px 60px rgba(0,0,0,.28);
+  position: relative;
+}
+.marquee-card img { width: 100%; aspect-ratio: 16/10; object-fit: cover; display: block; transition: transform .7s ease; }
+.marquee-card:hover img { transform: scale(1.03); }
+.marquee-card .mc-cap {
+  position: absolute; inset: auto 0 0 0; padding: 26px 22px 16px;
+  background: linear-gradient(0deg, rgba(0,0,0,.55), transparent);
+  color: #fff; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;
+  opacity: .95;
+}
+.marquee-card .mc-cap span { font-size: 14px !important; }
+
+/* Stats fade-in (Squarespace stats__card fadeIn 1.2s) */
+.fade-up { opacity: 0; transform: translateY(26px); transition: opacity 1.2s ease, transform 1.2s ease; }
+.fade-up.on { opacity: 1; transform: none; }
+
+/* Inventory cards */
+.inv-card { display: block; background: #fff; overflow: hidden; border: 1px solid var(--line); transition: box-shadow .25s, transform .25s; }
+.inv-card:hover { box-shadow: 0 26px 60px rgba(0,0,0,.14); transform: translateY(-4px); }
+.inv-card img { width: 100%; aspect-ratio: 16/10; object-fit: cover; display: block; transition: transform .6s ease; }
+.inv-card:hover img { transform: scale(1.04); }
+
+/* Nav */
+.nav-solid { background: rgba(255,255,255,.94); color: #0e0e0e; backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+.nav-clear { background: transparent; color: #fff; }
+
+/* Detail spec grid */
+.spec-grid { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+@media (max-width: 860px) { .spec-grid { grid-template-columns: repeat(2, 1fr); } }
+.spec-cell { padding: 26px 24px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }

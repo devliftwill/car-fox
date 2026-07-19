@@ -1,0 +1,36 @@
+# === Secrets (never commit) ===
+.env
+.env.*
+!.env.example
+*.pem
+
+# === Dependencies ===
+node_modules/
+/carfox-web/node_modules/
+
+# === Python ===
+.venv/
+__pycache__/
+*.pyc
+
+# === Next.js build output ===
+.next/
+/carfox-web/.next/
+out/
+build/
+
+# === Logs ===
+*.log
+
+# === Editor / OS ===
+.DS_Store
+
+# === TypeScript ===
+*.tsbuildinfo
+next-env.d.ts
+
+# === Vercel ===
+.vercel
+
+# === Claude local settings ===
+.claude/settings.local.json

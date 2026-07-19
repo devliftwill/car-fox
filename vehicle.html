@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vehicle — Car Fox</title>
+<style>
+  :root{ --ink:#141414; --paper:#ffffff; --grey:#f3f3f1; --mut:#6e6e6e; --line:#e6e6e3; --fox:#d4642a; --ok:#1f9d57; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Helvetica Neue",Helvetica,-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  .btn{display:inline-block;background:var(--ink);color:#fff;padding:16px 32px;font-weight:500;font-size:15px;border:1px solid var(--ink);cursor:pointer;transition:.18s}
+  .btn:hover{background:#000}
+  .btn.line{background:transparent;color:var(--ink)}
+  .btn.line:hover{background:var(--grey)}
+
+  nav{position:sticky;top:0;z-index:60;display:flex;align-items:center;justify-content:space-between;padding:18px 4vw;background:#fff;border-bottom:1px solid var(--line)}
+  .wordmark{font-weight:700;letter-spacing:.26em;font-size:14px}
+  .wordmark .dot{color:var(--fox)}
+  nav .links{display:flex;gap:26px;align-items:center;font-size:14.5px;font-weight:500}
+  nav .btn{padding:11px 22px;font-size:13.5px}
+
+  .crumbs{max-width:1280px;margin:0 auto;padding:26px 4vw 0;font-size:13.5px;color:var(--mut)}
+  .crumbs a:hover{text-decoration:underline}
+
+  .lead{max-width:1280px;margin:0 auto;padding:18px 4vw 0;display:grid;grid-template-columns:1.25fr 1fr;gap:5vw;align-items:start}
+  @media(max-width:900px){.lead{grid-template-columns:1fr}}
+  .stage{border:1px solid var(--line);background:var(--grey)}
+  .stage .art{aspect-ratio:4/2.7}
+  .thumbs{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+  .thumbs .t{border:1px solid var(--line);aspect-ratio:4/2.7;background:var(--grey);opacity:.65;cursor:pointer}
+  .thumbs .t.on{opacity:1;outline:2px solid var(--ink)}
+
+  .facts .yr{font-size:12.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--mut);font-weight:600}
+  .facts h1{font-size:clamp(30px,3.8vw,52px);letter-spacing:-.035em;line-height:1.02;margin-top:8px;font-weight:700}
+  .price{font-size:30px;font-weight:700;margin-top:18px}
+  .sub{color:var(--mut);font-size:14.5px;margin-top:6px}
+  .facts .cta{display:flex;gap:12px;margin-top:26px;flex-wrap:wrap}
+  .askfox{margin-top:18px;padding:16px 18px;background:#fdf2ea;border:1px solid #f3d9c6;font-size:14.5px;line-height:1.55}
+  .askfox b{color:var(--fox)}
+
+  .specs{max-width:1280px;margin:0 auto;padding:9vh 4vw 4vh}
+  .specs h2,.history h2{font-size:clamp(24px,3vw,38px);letter-spacing:-.03em;font-weight:700;margin-bottom:28px}
+  .specgrid{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);border-left:1px solid var(--line)}
+  @media(max-width:900px){.specgrid{grid-template-columns:repeat(2,1fr)}}
+  .spec{padding:22px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .spec .k{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);font-weight:600}
+  .spec .v{font-size:18px;font-weight:600;margin-top:8px;letter-spacing:-.01em}
+
+  .history{max-width:1280px;margin:0 auto;padding:4vh 4vw 12vh}
+  .hrow{display:flex;gap:16px;align-items:flex-start;padding:20px 0;border-bottom:1px solid var(--line);font-size:15.5px;line-height:1.55}
+  .hrow .ic{font-size:20px;line-height:1.2}
+  .hrow b{font-weight:600}
+  .hrow .ok{color:var(--ok);font-weight:700}
+
+  .band{background:var(--ink);color:#fff;padding:13vh 4vw;text-align:center}
+  .band h2{font-size:clamp(30px,4.8vw,64px);letter-spacing:-.038em;font-weight:700;line-height:1.02}
+  .band p{margin-top:16px;font-size:16.5px;opacity:.85}
+  .band .btn{margin-top:30px;background:#fff;color:var(--ink);border-color:#fff}
+  .band .btn:hover{background:#e9e9e6}
+
+  footer{padding:50px 4vw;display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--mut);flex-wrap:wrap;gap:14px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+
+<nav>
+  <a class="wordmark" href="index.html">CAR FOX<span class="dot">.</span></a>
+  <div class="links">
+    <a href="index.html#inventory">Inventory</a>
+    <a class="btn" href="index.html#inventory">Browse cars</a>
+  </div>
+</nav>
+
+<div class="crumbs" id="crumbs"><a href="index.html">Home</a> / <a href="index.html#inventory">Inventory</a> / …</div>
+
+<section class="lead">
+  <div>
+    <div class="stage"><div class="art" id="mainArt"></div></div>
+    <div class="thumbs" id="thumbs"></div>
+  </div>
+  <div class="facts" id="facts"><!-- injected --></div>
+</section>
+
+<section class="specs">
+  <h2>Specifications</h2>
+  <div class="specgrid" id="specgrid"></div>
+</section>
+
+<section class="history">
+  <h2>Vehicle history highlights</h2>
+  <div id="hist"></div>
+</section>
+
+<section class="band">
+  <h2>Not sure? Ask the Fox.</h2>
+  <p>He's in the corner — ask him anything about this exact car.</p>
+  <a class="btn" href="index.html#inventory">Back to the lot</a>
+</section>
+
+<footer>
+  <span class="wordmark">CAR FOX<span style="color:var(--fox)">.</span></span>
+  <span>Live avatar demo · Real-time video by LemonSlice</span>
+</footer>
+
+<lemon-slice-widget agent-id="agent_a5be73d0ae81c38d"></lemon-slice-widget>
+<script type="module" src="https://unpkg.com/@lemonsliceai/lemon-slice-widget"></script>
+<script src="cars.js"></script>
+<script>
+  const id = parseInt(new URLSearchParams(location.search).get("id") || "1", 10);
+  const c = CARS.find(x => x.id === id) || CARS[0];
+  const name = `${c.year} ${c.make} ${c.model}`;
+  document.title = `${name} — Car Fox`;
+
+  document.getElementById("crumbs").innerHTML =
+    `<a href="index.html">Home</a> / <a href="index.html#inventory">Inventory</a> / <b style="color:var(--ink)">${name}</b>`;
+
+  // Art + fake gallery (tint variations act as angles until real photos land)
+  const main = document.getElementById("mainArt");
+  main.innerHTML = carSVG(c.color, true);
+  const shades = [c.color, "#20262b", "#8a8f98", c.color];
+  document.getElementById("thumbs").innerHTML = shades.map((s,i)=>
+    `<div class="t${i===0?" on":""}" data-c="${s}">${carSVG(s)}</div>`).join("");
+  document.getElementById("thumbs").addEventListener("click", e=>{
+    const t = e.target.closest(".t"); if(!t) return;
+    document.querySelectorAll(".thumbs .t").forEach(x=>x.classList.remove("on"));
+    t.classList.add("on");
+    main.innerHTML = carSVG(t.dataset.c, true);
+  });
+
+  document.getElementById("facts").innerHTML = `
+    <div class="yr">${c.year} · ${c.body} · Stock #CF-10${c.id}</div>
+    <h1>${c.make} ${c.model}</h1>
+    <div class="price">${money(c.price)}</div>
+    <div class="sub">${kmiles(c.miles)} · ${c.drivetrain} · ${c.trans} · ${c.mpg} MPG</div>
+    <div class="cta">
+      <a class="btn" href="#" onclick="alert('Demo only — hook up your sales flow here.');return false;">Start purchase</a>
+      <a class="btn line" href="#" onclick="alert('Demo only — schedule flow goes here.');return false;">Book test drive</a>
+    </div>
+    <div class="askfox">🦊 <b>Ask the Car Fox about this car.</b> Hit the Video chat bubble in the corner and say: “Tell me about the ${name}.”</div>`;
+
+  document.getElementById("specgrid").innerHTML = [
+    ["VIN", c.vin], ["Mileage", kmiles(c.miles)], ["Price", money(c.price)], ["Body", c.body],
+    ["Drivetrain", c.drivetrain], ["Transmission", c.trans], ["Fuel economy", c.mpg], ["Owners", c.owners]
+  ].map(([k,v])=>`<div class="spec"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  const rows = [
+    ["📋", `<b>${c.owners} previous owner${c.owners>1?"s":""}.</b> Title history is clean — no salvage, no flood, no lemon buyback.`],
+    [c.accidents===0 ? "✅" : "⚠️", c.accidents===0
+        ? `<span class="ok">No accidents reported.</span> No structural damage on record.`
+        : `<b>${c.accidents} minor incident reported.</b> Cosmetic repair documented — ask the Fox what to double-check.`],
+    ["🔧", `<b>Service records on file.</b> Regular maintenance intervals reported through ${c.year + 3}.`],
+    ["📍", `<b>Regional history.</b> No rust-belt registration; last registered in a dry climate.`]
+  ];
+  document.getElementById("hist").innerHTML =
+    rows.map(([ic,t])=>`<div class="hrow"><div class="ic">${ic}</div><div>${t}</div></div>`).join("");
+</script>
+</body>
+</html>
