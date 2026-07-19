@@ -19,7 +19,9 @@ export async function POST(req: NextRequest) {
     // malformed body → treated as wrong code below
   }
 
-  if (code.trim() !== passcode) {
+  // Case-insensitive: the gate input renders uppercase, and "fox-4601"
+  // should work as well as "FOX-4601".
+  if (code.trim().toUpperCase() !== passcode.toUpperCase()) {
     await new Promise((r) => setTimeout(r, 600));
     return NextResponse.json({ ok: false, error: "That code isn't right." }, { status: 401 });
   }

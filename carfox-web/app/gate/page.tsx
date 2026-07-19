@@ -1,18 +1,40 @@
 "use client";
 
-import { Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Passcode gate — the first thing an invited guest sees, so it gets the same
+ * cinematic treatment as the homepage hero: ambient film loop, light type,
+ * one centered action. Everything else on the site is behind this page.
+ */
 function GateForm() {
-  const router = useRouter();
   const params = useSearchParams();
   const from = params.get("from") || "/";
 
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [shake, setShake] = useState(false);
+
+  // Same graceful fallback as the hero: if the loop can't play, hold on the poster.
+  const vidRef = useRef<HTMLVideoElement>(null);
+  const [videoOk, setVideoOk] = useState(true);
+  useEffect(() => {
+    const v = vidRef.current;
+    if (!v) return;
+    const fail = () => setVideoOk(false);
+    v.addEventListener("error", fail);
+    const t = setTimeout(() => {
+      if (v.readyState < 2) setVideoOk(false);
+    }, 2500);
+    return () => {
+      clearTimeout(t);
+      v.removeEventListener("error", fail);
+    };
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -26,69 +48,67 @@ function GateForm() {
         body: JSON.stringify({ code }),
       });
       if (res.ok) {
-        // Full navigation so the middleware re-runs with the new cookie.
+        // Full navigation so the proxy re-runs with the new cookie.
         window.location.assign(from.startsWith("/") ? from : "/");
         return;
       }
       const data = await res.json().catch(() => ({}));
       setError(data.error || "That code isn't right.");
+      setShake(true);
       setCode("");
     } catch {
       setError("Something went wrong. Try again.");
+      setShake(true);
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100dvh",
-        display: "grid",
-        placeItems: "center",
-        background: "#0e0e0e",
-        color: "#fff",
-        padding: "24px",
-      }}
-    >
-      <div style={{ width: "min(92vw, 380px)", textAlign: "center" }}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/carfox-avatar.png"
-          alt=""
-          width={72}
-          height={72}
-          style={{
-            width: 72,
-            height: 72,
-            borderRadius: "50%",
-            objectFit: "cover",
-            margin: "0 auto 26px",
-            border: "2px solid rgba(255,255,255,.14)",
-          }}
-        />
+    <main className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-black text-white">
+      {/* Ambient film, same footage as the homepage hero */}
+      <div className="hero-media absolute inset-0" aria-hidden>
+        {videoOk ? (
+          <video
+            ref={vidRef}
+            autoPlay
+            muted
+            loop
+            playsInline
+            poster="/banner-poster.jpg"
+            src="/banner-loop.mp4"
+          />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src="/banner-poster.jpg" alt="" className="hero-poster" />
+        )}
+      </div>
+      {/* Heavier scrim than the hero — the form needs the contrast */}
+      <div
+        className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,.62),rgba(0,0,0,.44)_45%,rgba(0,0,0,.74))]"
+        aria-hidden
+      />
 
-        <div className="sq-kicker" style={{ color: "var(--fox)" }}>
+      <div className="relative z-10 w-[min(92vw,400px)] px-2 py-16 text-center">
+        <div className="fox-boot-avatar mx-auto !h-[76px] !w-[76px]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/carfox-avatar.png" alt="" />
+          <span />
+          <span />
+        </div>
+
+        <div className="sq-kicker mt-8" style={{ color: "var(--fox)" }}>
           Private preview
         </div>
-        <h1
-          className="sq-h2"
-          style={{ fontSize: "clamp(30px, 6vw, 44px)", marginTop: 14 }}
-        >
+        <h1 className="sq-h2 mt-3" style={{ fontSize: "clamp(38px, 7vw, 56px)" }}>
           Car&nbsp;Fox
         </h1>
-        <p
-          style={{
-            marginTop: 14,
-            fontSize: 15,
-            lineHeight: 1.5,
-            color: "rgba(255,255,255,.55)",
-          }}
-        >
-          This site isn&apos;t public yet. Enter your access code to take a look.
+        <p className="mx-auto mt-4 max-w-[30ch] text-[15px] leading-relaxed text-white/60">
+          We&apos;re not open to the public yet. Enter your access code to step
+          onto the lot.
         </p>
 
-        <form onSubmit={submit} style={{ marginTop: 32 }}>
+        <form onSubmit={submit} className="mt-9">
           <input
             type="text"
             value={code}
@@ -100,59 +120,30 @@ function GateForm() {
             spellCheck={false}
             aria-label="Access code"
             aria-invalid={!!error}
-            style={{
-              width: "100%",
-              padding: "16px 18px",
-              fontSize: 16,
-              letterSpacing: "0.06em",
-              textAlign: "center",
-              color: "#fff",
-              background: "rgba(255,255,255,.05)",
-              border: `1px solid ${error ? "var(--fox)" : "rgba(255,255,255,.18)"}`,
-              borderRadius: 0,
-              outline: "none",
-              transition: "border-color .18s, background .18s",
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.borderColor = "rgba(255,255,255,.55)";
-              e.currentTarget.style.background = "rgba(255,255,255,.08)";
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.borderColor = error
-                ? "var(--fox)"
-                : "rgba(255,255,255,.18)";
-              e.currentTarget.style.background = "rgba(255,255,255,.05)";
-            }}
+            className={`gate-input ${error ? "is-error" : ""} ${shake ? "do-shake" : ""}`}
+            onAnimationEnd={() => setShake(false)}
           />
 
           <div
-            style={{
-              minHeight: 20,
-              marginTop: 10,
-              fontSize: 13,
-              color: "var(--fox)",
-              opacity: error ? 1 : 0,
-              transition: "opacity .18s",
-            }}
+            className="mt-2.5 min-h-5 text-[13px] transition-opacity duration-200"
+            style={{ color: "var(--fox)", opacity: error ? 1 : 0 }}
             role="alert"
           >
-            {error || " "}
+            {error || " "}
           </div>
 
           <button
             type="submit"
             disabled={busy || !code.trim()}
-            className="sq-btn sq-btn--white"
-            style={{
-              width: "100%",
-              marginTop: 6,
-              opacity: busy || !code.trim() ? 0.55 : 1,
-              cursor: busy || !code.trim() ? "default" : "pointer",
-            }}
+            className="sq-btn sq-btn--white mt-1.5 w-full disabled:cursor-default disabled:opacity-55"
           >
-            {busy ? "Checking…" : "Enter"}
+            {busy ? "Checking…" : "Enter the lot"}
           </button>
         </form>
+
+        <p className="mt-9 text-[12px] tracking-wide text-white/40">
+          Access is by invitation only.
+        </p>
       </div>
     </main>
   );
@@ -160,7 +151,7 @@ function GateForm() {
 
 export default function GatePage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<main className="min-h-[100svh] bg-black" />}>
       <GateForm />
     </Suspense>
   );
