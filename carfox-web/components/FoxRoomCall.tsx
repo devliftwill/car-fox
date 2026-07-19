@@ -225,7 +225,12 @@ export default function FoxRoomCall({
   return (
     <div className={compact ? "px-4 pb-4 pt-3 text-center" : "mx-auto max-w-3xl px-6 text-center"}>
       <div
-        style={{ aspectRatio: videoAspect, maxHeight: "80dvh" }}
+        style={{
+          aspectRatio: videoAspect,
+          // In the docked widget, leave room for the header + call controls so
+          // they stay visible without scrolling on short/landscape screens.
+          maxHeight: compact ? "calc(78dvh - 150px)" : "80dvh",
+        }}
         className={`relative mx-auto w-full overflow-hidden bg-neutral-900 shadow-2xl ${
           compact ? "max-w-[260px] rounded-xl" : "max-w-[440px] rounded-2xl"
         }`}
