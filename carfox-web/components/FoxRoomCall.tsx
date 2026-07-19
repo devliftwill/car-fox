@@ -121,6 +121,7 @@ export default function FoxRoomCall({
               clearTimeout(fallback);
               ac.close().catch(() => {});
               if (!callRef.current) return; // call already ended
+              callRef.current.setLocalAudio(!mutedRef.current); // apply mute pref
               setPhase("live");
               setStatus("Live — just talk. Interrupt him any time. 🦊");
             };
@@ -138,6 +139,7 @@ export default function FoxRoomCall({
               ac.close().catch(() => {});
             });
           } catch {
+            callRef.current?.setLocalAudio(!mutedRef.current);
             setPhase("live"); // analyser unavailable — reveal immediately
           }
         }
@@ -154,7 +156,10 @@ export default function FoxRoomCall({
         url: data.room_url,
         userName: "visitor",
         startVideoOff: true,
-        startAudioOff: false, // mic on — the bot listens through the room
+        // Mic must be HOT from the start: Gemini Live stalls generation when
+        // the session has no live audio input at all (verified — a cold mic
+        // made the kickoff silently hang and the avatar bail after 30s).
+        startAudioOff: false,
       });
       setStatus("Connected — the fox is joining…");
     } catch (e) {
@@ -190,6 +195,7 @@ export default function FoxRoomCall({
     const call = callRef.current;
     if (!call) return;
     const next = !muted;
+    mutedRef.current = next;
     call.setLocalAudio(!next);
     setMuted(next);
   }

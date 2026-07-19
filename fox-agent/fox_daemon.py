@@ -45,7 +45,13 @@ from pipecat.transports.lemonslice.transport import (
 load_dotenv()
 load_dotenv(Path(__file__).parent.parent / "carfox-web" / ".env.local")
 
-PORT = 7788
+# Hosted platforms (Railway/Render/Fly) inject $PORT and expect 0.0.0.0.
+# Locally this stays 7788 on 127.0.0.1 so nothing about dev changes.
+PORT = int(os.environ.get("PORT", "7788"))
+HOST = os.environ.get("FOX_DAEMON_HOST", "127.0.0.1" if "PORT" not in os.environ else "0.0.0.0")
+# When set, every /start and /stop must present this in the X-Fox-Secret header.
+# The Vercel /api/fox-room proxy forwards it; the daemon is otherwise public.
+FOX_DAEMON_SECRET = os.environ.get("FOX_DAEMON_SECRET")
 MAX_SESSION_SECS = 600
 NO_VISITOR_TIMEOUT_SECS = 90
 
@@ -125,7 +131,12 @@ class FoxSession:
                 voice="Puck",
                 system_instruction=system_prompt,
             ),
-            inference_on_context_initialization=False,
+            # MUST be True: with False, pipecat seeds the intro but never
+            # triggers inference on Gemini 3 (it skips both turn_complete and
+            # the send_realtime_input nudge Gemini 3 requires) — the fox goes
+            # permanently mute. Boot stays silent regardless because the
+            # context is empty until we add the intro at both-ready.
+            inference_on_context_initialization=True,
         )
 
         context = LLMContext()
@@ -151,15 +162,20 @@ class FoxSession:
             if greeted or not (avatar_ready.is_set() and visitor_ready.is_set()):
                 return
             greeted = True
+            # Seny-style kickoff: tell the model the call just connected and
+            # that IT opens the conversation — the visitor's mic is muted
+            # until this intro plays, so nothing can preempt it.
             intro = (
-                "You just appeared on screen for a visitor. Introduce yourself as the Car Fox "
-                "in one short, energetic sentence"
+                "The visitor's call just connected and your video appeared on their screen. "
+                "YOU speak first — right now. Open with one short, energetic Car Fox greeting: "
+                "introduce yourself"
             )
             if focus:
-                intro += f" and offer to tell them about {focus.split('(')[0].strip()} they're looking at"
+                intro += f", and offer to tell them about {focus.split('(')[0].strip()} they're looking at"
             else:
-                intro += " and invite them to ask about any car on the lot"
-            context.add_message({"role": "user", "content": intro + "!"})
+                intro += ", and invite them to ask about any car on the lot"
+            intro += ". One or two sentences, then pause for their reply."
+            context.add_message({"role": "user", "content": intro})
             await task.queue_frames([LLMRunFrame()])
             logger.info("🎤 Intro queued (avatar + visitor both ready)")
 
@@ -219,8 +235,17 @@ current: FoxSession | None = None
 http_session: aiohttp.ClientSession | None = None
 
 
+def _unauthorized(request: web.Request) -> bool:
+    """True if a shared secret is configured and the request doesn't match it."""
+    if not FOX_DAEMON_SECRET:
+        return False
+    return request.headers.get("X-Fox-Secret") != FOX_DAEMON_SECRET
+
+
 async def handle_start(request: web.Request):
     global current
+    if _unauthorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
     body = await request.json() if request.can_read_body else {}
     vehicle = body.get("vehicle")
 
@@ -242,6 +267,8 @@ async def handle_start(request: web.Request):
 
 async def handle_stop(request: web.Request):
     global current
+    if _unauthorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
     if current is not None:
         await current.stop()
         current = None
@@ -263,9 +290,9 @@ async def main():
     app.router.add_get("/health", handle_health)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", PORT)
+    site = web.TCPSite(runner, HOST, PORT)
     await site.start()
-    logger.info(f"🦊 Fox daemon warm on http://127.0.0.1:{PORT} — idle costs nothing.")
+    logger.info(f"🦊 Fox daemon warm on http://{HOST}:{PORT} — idle costs nothing.")
     await asyncio.Event().wait()  # run forever
 
 
