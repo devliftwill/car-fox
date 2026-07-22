@@ -93,6 +93,7 @@ export default function FoxLiveCall({
   const [neuralFailed, setNeuralFailed] = useState(false);
   const [neuralAspect, setNeuralAspect] = useState("9 / 16");
   const neuralVideoRef = useRef<HTMLVideoElement | null>(null);
+  const neuralAudioRef = useRef<HTMLAudioElement | null>(null);
   const mutedRef = useRef(false);
   const startingRef = useRef(false);
 
@@ -132,15 +133,24 @@ export default function FoxLiveCall({
   }, [phase]);
 
   // Attach the neural WebRTC stream once its <video> exists.
+  // IMPORTANT: video and audio tracks go to SEPARATE elements — MuseTalk
+  // sends no audio frames during silence, and a media element with a starved
+  // audio track freezes its whole clock (video included, at ~3s, every time).
   useEffect(() => {
     const v = neuralVideoRef.current;
+    const a = neuralAudioRef.current;
     const sess = s.current.neuralSess;
     if (!neuralOn || !v || !sess) return;
-    v.srcObject = sess.stream;
-    v.muted = false;
+    v.srcObject = new MediaStream(sess.stream.getVideoTracks());
+    v.muted = true;
+    if (a) {
+      a.srcObject = new MediaStream(sess.stream.getAudioTracks());
+      a.play().catch(() => {});
+    }
     v.play().catch(() => {
       const unlock = () => {
         v.play().catch(() => {});
+        a?.play().catch(() => {});
         document.removeEventListener("click", unlock);
       };
       document.addEventListener("click", unlock);
@@ -506,7 +516,10 @@ export default function FoxLiveCall({
         } ${compact ? "max-w-[260px] rounded-xl" : "max-w-[420px] rounded-2xl"}`}
       >
         {neuralOn ? (
-          <video ref={neuralVideoRef} autoPlay playsInline className="h-full w-full object-cover" />
+          <>
+            <video ref={neuralVideoRef} autoPlay playsInline muted className="h-full w-full object-cover" />
+            <audio ref={neuralAudioRef} autoPlay />
+          </>
         ) : avatar?.mode === "video" ? (
           <VideoAvatar key={avatar.videoUrl} config={avatar} sample={sampleFox} className="h-full w-full" />
         ) : avatar ? (
