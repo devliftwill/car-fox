@@ -1,5 +1,0 @@
-python-dotenv
-livekit-agents>=1.0
-livekit-plugins-google
-livekit-plugins-lemonslice
-livekit-plugins-noise-cancellation

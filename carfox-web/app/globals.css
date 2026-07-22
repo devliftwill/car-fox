@@ -134,6 +134,24 @@ body {
   }
 }
 
+/* Live SVG fox — frame glow while he speaks + caption scrim */
+.fox-live-frame { transition: box-shadow .25s ease; }
+.fox-live-frame.is-speaking {
+  box-shadow: 0 0 0 3px rgba(212,100,42,.55), 0 0 34px rgba(212,100,42,.4),
+    0 25px 50px -12px rgba(0,0,0,.25);
+}
+.fox-caption {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  padding: 26px 14px 12px;
+  background: linear-gradient(to top, rgba(6,24,52,.82), rgba(6,24,52,0));
+  color: #fff; font-size: 13px; line-height: 1.45; text-align: center;
+  pointer-events: none;
+}
+.fox-caption span {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Boot loader — fox avatar with pulse rings while the sidecar spins up */
 .fox-boot-avatar {
   position: relative; width: 88px; height: 88px;

@@ -2,27 +2,21 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import FoxRoomCall from "./FoxRoomCall";
+import FoxLiveCall from "./FoxLiveCall";
 
 /**
  * Site-wide Car Fox dock — the Gemini-powered fox on every page.
  *
  * Collapsed: a floating fox button in the lower-right.
- * Open: a compact live-call panel (FoxRoomCall autostarts the sidecar).
- * Page-aware: on /vehicles/[slug] the fox starts the call already knowing
- * that exact car (VIN, price, CARFAX history) via the bot's --vehicle flag.
- * Closing the panel unmounts the call → bot killed → LemonSlice session
- * ended → credit meter stopped.
+ * Open: a compact live-call panel (FoxLiveCall autostarts — browser-direct
+ * Gemini Live + the local SVG fox; no sidecar, no avatar vendor, nothing to
+ * pre-warm). Page-aware: on /vehicles/[slug] the fox starts the call already
+ * knowing that exact car (VIN, price, CARFAX history). Closing the panel
+ * unmounts the call, which closes the Gemini session.
  */
 export default function FoxWidget() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
-
-  // Pre-warm the fox daemon on page load (free — no LemonSlice session yet),
-  // so clicking the fox skips the Python boot entirely.
-  useEffect(() => {
-    fetch("/api/fox-room?warm=1").catch(() => {});
-  }, []);
 
   // Any CTA on the site can open the dock by dispatching this event
   // (see AskFoxButton) — there's no separate full-page fox experience.
@@ -69,7 +63,7 @@ export default function FoxWidget() {
             </button>
           </div>
           <div className="fox-dock-body">
-            <FoxRoomCall key={pathname} vehicleSlug={vehicleSlug} compact autoStart />
+            <FoxLiveCall key={pathname} vehicleSlug={vehicleSlug} compact autoStart />
           </div>
         </div>
       )}
