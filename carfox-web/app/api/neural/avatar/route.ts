@@ -36,6 +36,16 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const task = req.nextUrl.searchParams.get("task");
+  // ?list=1 → the avatar library: durable on-disk avatars on the GPU box
+  if (!task && req.nextUrl.searchParams.get("list")) {
+    try {
+      const r = await fetch(`${NEURAL}/api/avatar/list`, { signal: AbortSignal.timeout(10000) });
+      const j = await r.json();
+      return NextResponse.json({ avatars: j?.data?.avatars ?? [] });
+    } catch {
+      return NextResponse.json({ avatars: [], offline: true });
+    }
+  }
   if (!task) return NextResponse.json({ error: "task param required" }, { status: 400 });
   try {
     const r = await fetch(`${NEURAL}/api/avatar/task/${encodeURIComponent(task)}`, {

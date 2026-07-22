@@ -27,10 +27,22 @@ export default function AvatarLab() {
   const clipVideoRef = useRef<HTMLVideoElement | null>(null);
   const recRef = useRef<{ stream?: MediaStream; rec?: MediaRecorder; chunks: Blob[]; timer?: ReturnType<typeof setInterval> }>({ chunks: [] });
 
+  const [library, setLibrary] = useState<{ avatar_id: string; created: number }[]>([]);
+
   useEffect(() => {
     const id = localStorage.getItem("carfox.gpuAvatarId");
     if (id) Promise.resolve().then(() => setGpuAvatarId(id));
+    // saved avatars live on the GPU box — no need to re-record between visits
+    fetch("/api/neural/avatar?list=1")
+      .then((r) => r.json())
+      .then((j) => setLibrary(j?.avatars ?? []))
+      .catch(() => {});
   }, []);
+
+  function pickAvatar(id: string) {
+    localStorage.setItem("carfox.gpuAvatarId", id);
+    setGpuAvatarId(id);
+  }
 
   /** Ship a clip to the GPU; it becomes the MuseTalk avatar for calls here. */
   async function generate(blob: Blob) {
@@ -56,6 +68,7 @@ export default function AvatarLab() {
           localStorage.setItem("carfox.gpuAvatarId", avatarId);
           setGpuAvatarId(avatarId);
           setGpuGen(null);
+          setLibrary((l) => [{ avatar_id: avatarId, created: Date.now() / 1000 }, ...l]);
           return;
         }
         if (d.status === "failed") throw new Error(d.error_msg || "generation failed");
@@ -204,8 +217,8 @@ export default function AvatarLab() {
     v.play().catch(() => {});
   }, [clip]);
 
-  function resetAvatar() {
-    localStorage.removeItem("carfox.gpuAvatarId");
+  function recordNew() {
+    // keep the library — just go back to step 1
     setGpuAvatarId(null);
     if (clip) URL.revokeObjectURL(clip.url);
     setClip(null);
@@ -256,6 +269,24 @@ export default function AvatarLab() {
                 Face the camera, sit fairly still, mouth closed. Nothing is stored server-side
                 beyond the avatar frames on our own GPU box.
               </p>
+              {library.length > 0 && (
+                <div className="mt-4 border-t border-neutral-200 pt-4">
+                  <p className="mb-2 text-center text-[12px] uppercase tracking-[0.14em] text-neutral-400">
+                    Or reuse a saved avatar
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {library.map((a) => (
+                      <button
+                        key={a.avatar_id}
+                        onClick={() => pickAvatar(a.avatar_id)}
+                        className="sq-btn border border-neutral-300 text-[12px] text-neutral-600 hover:border-neutral-900 hover:text-neutral-900"
+                      >
+                        {a.avatar_id}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </section>
@@ -286,10 +317,10 @@ export default function AvatarLab() {
         <section className="mt-10">
           <div className="mb-4 flex items-center justify-center gap-3 text-[13px] text-neutral-500">
             <span>
-              Your GPU avatar <b>{gpuAvatarId}</b> is ready.
+              Talking as <b>{gpuAvatarId}</b>.
             </span>
-            <button onClick={resetAvatar} className="underline hover:text-neutral-900">
-              start over
+            <button onClick={recordNew} className="underline hover:text-neutral-900">
+              record a new one
             </button>
           </div>
           <FoxLiveCall key={gpuAvatarId} neural neuralAvatarId={gpuAvatarId} />
