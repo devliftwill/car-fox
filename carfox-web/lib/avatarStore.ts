@@ -26,36 +26,103 @@ export type AvatarRig = {
   };
 };
 
+/** Pre-tracked motion for a video-based avatar: frames[i] is the rig at i/fps. */
+export type AvatarVideoTrack = {
+  fps: number;
+  duration: number; // seconds of the analyzed loop
+  frames: AvatarRig[];
+};
+
 export type AvatarConfig = {
-  image: string; // data URL, downscaled
+  /** "photo" (default, legacy) or "video" (living-portrait loop). */
+  mode?: "photo" | "video";
+  image?: string; // photo mode: data URL, downscaled
+  video?: AvatarVideoTrack; // video mode: tracking data (blob lives in IndexedDB)
+  /** Transient object URL for the video blob — set at load/save, never persisted. */
+  videoUrl?: string;
   w: number;
   h: number;
-  rig: AvatarRig;
+  rig: AvatarRig; // photo rig, or the first tracked frame for video
   createdAt: number;
 };
 
-const KEY = "carfox.avatar.v1";
+/** Linear interpolation between two tracked rigs (same contour topology). */
+export function lerpRig(a: AvatarRig, b: AvatarRig, t: number): AvatarRig {
+  const L = (x: number, y: number) => x + (y - x) * t;
+  const lp = (p: Pt, q: Pt): Pt => ({ x: L(p.x, q.x), y: L(p.y, q.y) });
+  return {
+    mouth: {
+      x: L(a.mouth.x, b.mouth.x),
+      y: L(a.mouth.y, b.mouth.y),
+      w: L(a.mouth.w, b.mouth.w),
+      angle: L(a.mouth.angle, b.mouth.angle),
+    },
+    eyeL: { x: L(a.eyeL.x, b.eyeL.x), y: L(a.eyeL.y, b.eyeL.y), r: L(a.eyeL.r, b.eyeL.r) },
+    eyeR: { x: L(a.eyeR.x, b.eyeR.x), y: L(a.eyeR.y, b.eyeR.y), r: L(a.eyeR.r, b.eyeR.r) },
+    contours:
+      a.contours && b.contours
+        ? {
+            lipInnerTop: a.contours.lipInnerTop.map((p, i) => lp(p, b.contours!.lipInnerTop[i])),
+            lipInnerBottom: a.contours.lipInnerBottom.map((p, i) => lp(p, b.contours!.lipInnerBottom[i])),
+            eyeL: a.contours.eyeL.map((p, i) => lp(p, b.contours!.eyeL[i])),
+            eyeR: a.contours.eyeR.map((p, i) => lp(p, b.contours!.eyeR[i])),
+          }
+        : a.contours,
+  };
+}
+
 export const AVATAR_EVENT = "carfox:avatar-changed";
 
-export function loadAvatar(): AvatarConfig | null {
+// ---- IndexedDB persistence (video blobs are MBs — localStorage can't) ----
+const DB_NAME = "carfox-avatar";
+const STORE = "avatars";
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idb<T>(mode: IDBTransactionMode, op: (store: IDBObjectStore) => IDBRequest): Promise<T> {
+  const db = await openDb();
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
-    const cfg = JSON.parse(raw) as AvatarConfig;
-    if (!cfg.image || !cfg.rig?.mouth) return null;
+    return await new Promise<T>((resolve, reject) => {
+      const req = op(db.transaction(STORE, mode).objectStore(STORE));
+      req.onsuccess = () => resolve(req.result as T);
+      req.onerror = () => reject(req.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadAvatar(): Promise<AvatarConfig | null> {
+  try {
+    const rec = await idb<{ cfg: AvatarConfig; videoBlob?: Blob } | undefined>("readonly", (s) => s.get("current"));
+    if (!rec?.cfg?.rig?.mouth) return null;
+    const cfg = { ...rec.cfg };
+    if (cfg.mode === "video" && rec.videoBlob) {
+      cfg.videoUrl = URL.createObjectURL(rec.videoBlob);
+    } else if (cfg.mode === "video") {
+      return null; // tracking data without its video — unusable
+    }
     return cfg;
   } catch {
     return null;
   }
 }
 
-export function saveAvatar(cfg: AvatarConfig) {
-  localStorage.setItem(KEY, JSON.stringify(cfg));
+export async function saveAvatar(cfg: AvatarConfig, videoBlob?: Blob): Promise<void> {
+  const { videoUrl: _drop, ...persistable } = cfg; // eslint-disable-line @typescript-eslint/no-unused-vars
+  await idb("readwrite", (s) => s.put({ cfg: persistable, videoBlob }, "current"));
   window.dispatchEvent(new Event(AVATAR_EVENT));
 }
 
-export function clearAvatar() {
-  localStorage.removeItem(KEY);
+export async function clearAvatar(): Promise<void> {
+  await idb("readwrite", (s) => s.delete("current"));
   window.dispatchEvent(new Event(AVATAR_EVENT));
 }
 

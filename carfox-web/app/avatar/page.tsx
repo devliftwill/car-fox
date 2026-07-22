@@ -9,8 +9,9 @@
  * REAL Gemini voice call drives this face through the same viseme pipeline
  * as the fox. Nothing is uploaded anywhere: the photo lives in localStorage.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PhotoAvatar from "@/components/PhotoAvatar";
+import VideoAvatar from "@/components/VideoAvatar";
 import FoxLiveCall from "@/components/FoxLiveCall";
 import type { FoxSample } from "@/components/FoxAvatar";
 import {
@@ -25,6 +26,7 @@ import {
   type Pt,
 } from "@/lib/avatarStore";
 import { autoRig } from "@/lib/faceAutoRig";
+import { analyzeVideo } from "@/lib/videoRig";
 
 type Pin = { x: number; y: number };
 type Pins = { mL: Pin; mR: Pin; eL: Pin; eR: Pin };
@@ -173,6 +175,11 @@ export default function AvatarStudio() {
   const [detect, setDetect] = useState<Detect>("idle");
   const [talking, setTalking] = useState(true);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Living-portrait draft (video mode) — mutually exclusive with the photo flow.
+  const [videoDraft, setVideoDraft] = useState<{ cfg: AvatarConfig; blob: Blob } | null>(null);
+  const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null);
+  const [videoErr, setVideoErr] = useState<string | null>(null);
+  const [hasSaved, setHasSaved] = useState(false);
   const boxRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<keyof Pins | null>(null);
   const origSrcRef = useRef<Blob | string | null>(null); // full-res source for quality crops
@@ -180,15 +187,21 @@ export default function AvatarStudio() {
   useEffect(() => {
     talkingRef.current = talking;
   });
-  // Tracks whether a custom avatar is saved; save/clear dispatch AVATAR_EVENT.
-  const hasSaved = useSyncExternalStore(
-    (cb) => {
-      window.addEventListener(AVATAR_EVENT, cb);
-      return () => window.removeEventListener(AVATAR_EVENT, cb);
-    },
-    () => loadAvatar() !== null,
-    () => false
-  );
+  // Saved-avatar presence (IndexedDB is async; save/clear dispatch AVATAR_EVENT).
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      loadAvatar().then((c) => {
+        if (alive) setHasSaved(!!c);
+      });
+    };
+    refresh();
+    window.addEventListener(AVATAR_EVENT, refresh);
+    return () => {
+      alive = false;
+      window.removeEventListener(AVATAR_EVENT, refresh);
+    };
+  }, []);
 
   const rig = useMemo(() => {
     if (!img || !pins) return null;
@@ -244,6 +257,8 @@ export default function AvatarStudio() {
 
   const loadFrom = useCallback(
     async (src: Blob | string) => {
+      setVideoDraft(null);
+      setVideoErr(null);
       origSrcRef.current = src;
       const r = await importImage(src);
       setImg(r);
@@ -253,17 +268,55 @@ export default function AvatarStudio() {
     [runDetect]
   );
 
-  // Dev/test hook: window.__avatarLoadUrl("/carfox-avatar.png")
-  useEffect(() => {
-    (window as unknown as Record<string, unknown>).__avatarLoadUrl = (url: string) => loadFrom(url);
-    return () => {
-      delete (window as unknown as Record<string, unknown>).__avatarLoadUrl;
+  /** Living portrait: analyze a short idle clip → per-frame tracked rig. */
+  const loadFromVideo = useCallback(async (blob: Blob) => {
+    setImg(null);
+    setPins(null);
+    setBaseRig(null);
+    setDetect("idle");
+    setVideoDraft(null);
+    setVideoErr(null);
+    setSavedAt(null);
+    const url = URL.createObjectURL(blob);
+    setAnalyzing({ done: 0, total: 1 });
+    const res = await analyzeVideo(url, (done, total) => setAnalyzing({ done, total }));
+    setAnalyzing(null);
+    if (!res) {
+      URL.revokeObjectURL(url);
+      setVideoErr(
+        "Couldn't track a face through that clip — try a brighter, front-facing video with one person (or use a photo instead)."
+      );
+      return;
+    }
+    const cfg: AvatarConfig = {
+      mode: "video",
+      video: res.track,
+      videoUrl: url,
+      w: res.w,
+      h: res.h,
+      rig: res.track.frames[0],
+      createdAt: 0,
     };
-  }, [loadFrom]);
+    setVideoDraft({ cfg, blob });
+  }, []);
+
+  // Dev/test hooks: window.__avatarLoadUrl("/x.png"), __avatarLoadVideoUrl("/x.mp4")
+  useEffect(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__avatarLoadUrl = (url: string) => loadFrom(url);
+    w.__avatarLoadVideoUrl = async (url: string) => {
+      const blob = await fetch(url).then((r) => r.blob());
+      return loadFromVideo(blob);
+    };
+    return () => {
+      delete w.__avatarLoadUrl;
+      delete w.__avatarLoadVideoUrl;
+    };
+  }, [loadFrom, loadFromVideo]);
 
   function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
-    if (f) void loadFrom(f);
+    if (f) void (f.type.startsWith("video/") ? loadFromVideo(f) : loadFrom(f));
     e.target.value = "";
   }
 
@@ -286,21 +339,35 @@ export default function AvatarStudio() {
     dragging.current = null;
   }
 
-  function save() {
-    if (!cfg) return;
-    const stamped = { ...cfg, createdAt: Date.now() };
-    saveAvatar(stamped);
+  async function save() {
+    const active = videoDraft?.cfg ?? cfg;
+    if (!active) return;
+    const stamped = { ...active, createdAt: Date.now() };
+    await saveAvatar(stamped, videoDraft?.blob);
     setSavedAt(stamped.createdAt);
+    if (videoDraft) setVideoDraft({ ...videoDraft, cfg: stamped });
   }
 
-  function discardSaved() {
-    clearAvatar();
+  async function discardSaved() {
+    await clearAvatar();
     setSavedAt(null);
   }
 
-  function loadSaved() {
-    const saved = loadAvatar();
+  async function loadSaved() {
+    const saved = await loadAvatar();
     if (!saved) return;
+    if (saved.mode === "video" && saved.videoUrl) {
+      const blob = await fetch(saved.videoUrl).then((r) => r.blob());
+      setImg(null);
+      setPins(null);
+      setBaseRig(null);
+      setVideoDraft({ cfg: saved, blob });
+      setSavedAt(saved.createdAt);
+      setDetect("found");
+      return;
+    }
+    if (!saved.image) return;
+    setVideoDraft(null);
     setImg({ dataUrl: saved.image, w: saved.w, h: saved.h });
     setBaseRig(saved.rig.contours ? saved.rig : null);
     setPins(rigToPins(saved.rig, saved.w, saved.h));
@@ -313,15 +380,29 @@ export default function AvatarStudio() {
       <p className="sq-kicker text-neutral-400">Sandbox — experimental</p>
       <h1 className="text-3xl font-light tracking-tight">Avatar Lab</h1>
       <p className="mt-2 max-w-xl text-[14px] leading-relaxed text-neutral-500">
-        A sandbox for photo-driven avatars: upload a photo, rig it, and test-drive it on a live
-        call — <b>right here only</b>. The Car Fox in the site&apos;s corner dock is not affected
-        by anything in this lab. Photos stay in your browser; nothing is uploaded to a server.
+        Turn a photo — or better, a <b>short idle video</b> (5–10s: sit still, blink, breathe) —
+        into a live talking avatar, and test-drive it on a real call <b>right here only</b>. The
+        Car Fox in the site&apos;s corner dock is not affected by anything in this lab. Media
+        stays in your browser; nothing is uploaded to a server.
       </p>
 
       <div className="mt-10 flex flex-col items-start gap-10 md:flex-row">
         {/* preview + pins */}
         <div className="w-full max-w-[400px]">
-          {img && cfg ? (
+          {videoDraft ? (
+            <div
+              className="fox-live-frame relative w-full overflow-hidden rounded-2xl shadow-2xl"
+              style={{ aspectRatio: `${videoDraft.cfg.w} / ${videoDraft.cfg.h}` }}
+            >
+              <VideoAvatar
+                key={videoDraft.cfg.videoUrl}
+                config={videoDraft.cfg}
+                sample={sample}
+                className="h-full w-full"
+                debugTag="studio"
+              />
+            </div>
+          ) : img && cfg ? (
             <div
               ref={boxRef}
               className="fox-live-frame relative w-full touch-none overflow-hidden rounded-2xl shadow-2xl"
@@ -348,13 +429,19 @@ export default function AvatarStudio() {
                 className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-neutral-300 bg-neutral-50 p-12 text-center hover:border-neutral-500"
                 style={{ aspectRatio: "4 / 5" }}
               >
-                <span className="text-4xl">📷</span>
-                <span className="text-[15px] font-medium">Choose a photo</span>
-                <span className="text-[12.5px] text-neutral-500">
-                  A clear, front-facing head &amp; shoulders shot works best
+                <span className="text-4xl">🎬</span>
+                <span className="text-[15px] font-medium">
+                  {analyzing
+                    ? `Tracking your face… ${analyzing.done}/${analyzing.total}`
+                    : "Choose a short video or a photo"}
                 </span>
-                <input type="file" accept="image/*" className="hidden" onChange={onFile} />
+                <span className="text-[12.5px] text-neutral-500">
+                  Best: a 5–10s front-facing clip where you sit still, blink, and breathe — the
+                  avatar inherits its life from your footage. A photo works too.
+                </span>
+                <input type="file" accept="image/*,video/*" className="hidden" onChange={onFile} disabled={!!analyzing} />
               </label>
+              {videoErr && <p className="text-[13px] text-red-600">{videoErr}</p>}
               {hasSaved && (
                 <button onClick={loadSaved} className="sq-btn w-full border border-neutral-300 text-neutral-600 hover:border-neutral-900 hover:text-neutral-900">
                   Load my saved avatar
@@ -366,13 +453,15 @@ export default function AvatarStudio() {
 
         {/* controls */}
         <div className="w-full max-w-[340px] space-y-6">
-          {img && (
+          {(img || videoDraft) && (
             <>
               <div className="text-[13.5px] leading-relaxed text-neutral-600">
-                {detect === "running" && "Looking for a face…"}
-                {detect === "found" &&
+                {videoDraft &&
+                  `Living portrait ready — motion tracked across ${videoDraft.cfg.video?.frames.length} frames. Your own blinks and movement play on loop; the mouth follows the voice.`}
+                {!videoDraft && detect === "running" && "Looking for a face…"}
+                {!videoDraft && detect === "found" &&
                   "Face found — pins placed automatically. Drag them if anything's off: orange pins are the mouth corners, blue pins the eyes."}
-                {detect === "none" &&
+                {!videoDraft && detect === "none" &&
                   "No face detected (mascots and pets count!) — drag the orange pins to the mouth corners and the blue pins onto the eyes."}
               </div>
               <div className="flex flex-wrap gap-2">
@@ -380,8 +469,8 @@ export default function AvatarStudio() {
                   {talking ? "Pause preview" : "Preview talking"}
                 </button>
                 <label className="sq-btn cursor-pointer border border-neutral-300 text-neutral-600 hover:border-neutral-900 hover:text-neutral-900">
-                  Different photo
-                  <input type="file" accept="image/*" className="hidden" onChange={onFile} />
+                  Different file
+                  <input type="file" accept="image/*,video/*" className="hidden" onChange={onFile} />
                 </label>
               </div>
               <button onClick={save} className="sq-btn sq-btn--black w-full">
@@ -401,16 +490,19 @@ export default function AvatarStudio() {
         </div>
       </div>
 
-      {/* live test-drive — the ONLY place a photo avatar takes calls */}
-      {cfg && (
+      {/* live test-drive — the ONLY place a custom avatar takes calls */}
+      {(videoDraft?.cfg ?? cfg) && (
         <section className="mt-16 border-t border-neutral-200 pt-10">
           <p className="sq-kicker text-neutral-400">Test drive</p>
           <h2 className="text-xl font-light tracking-tight">Live call with this avatar</h2>
           <p className="mb-6 mt-1 max-w-xl text-[13.5px] text-neutral-500">
-            Same Gemini brain and voice as the Car Fox — rendered with your photo, only on this
+            Same Gemini brain and voice as the Car Fox — rendered with your face, only on this
             page.
           </p>
-          <FoxLiveCall key={img?.dataUrl.length} avatar={cfg} />
+          <FoxLiveCall
+            key={videoDraft ? videoDraft.cfg.videoUrl : img?.dataUrl.length}
+            avatar={videoDraft?.cfg ?? cfg ?? undefined}
+          />
         </section>
       )}
     </main>

@@ -17,6 +17,7 @@ import { FoxLipsync, type FoxMouthParams } from "@/lib/foxLipsync";
 import type { AvatarConfig } from "@/lib/avatarStore";
 import FoxAvatar, { type FoxSample } from "./FoxAvatar";
 import PhotoAvatar from "./PhotoAvatar";
+import VideoAvatar from "./VideoAvatar";
 
 const GEMINI_MODEL = "models/gemini-3.1-flash-live-preview";
 const WS_URL =
@@ -414,7 +415,9 @@ export default function FoxLiveCall({
           speakingUi ? "is-speaking" : ""
         } ${compact ? "max-w-[260px] rounded-xl" : "max-w-[420px] rounded-2xl"}`}
       >
-        {avatar ? (
+        {avatar?.mode === "video" ? (
+          <VideoAvatar key={avatar.videoUrl} config={avatar} sample={sampleFox} className="h-full w-full" />
+        ) : avatar ? (
           <PhotoAvatar key={avatar.createdAt} config={avatar} sample={sampleFox} className="h-full w-full" />
         ) : (
           <FoxAvatar sample={sampleFox} className="h-full w-full" />
