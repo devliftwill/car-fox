@@ -44,7 +44,7 @@ export function pcmToWav(pcm: Int16Array, sampleRate: number): Blob {
   return new Blob([header, pcm.buffer as ArrayBuffer], { type: "audio/wav" });
 }
 
-export async function connectNeuralAvatar(): Promise<NeuralSession> {
+export async function connectNeuralAvatar(avatarId?: string): Promise<NeuralSession> {
   const pc = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
@@ -72,7 +72,11 @@ export async function connectNeuralAvatar(): Promise<NeuralSession> {
   const r = await fetch("/api/neural/offer", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sdp: pc.localDescription!.sdp, type: pc.localDescription!.type }),
+    body: JSON.stringify({
+      sdp: pc.localDescription!.sdp,
+      type: pc.localDescription!.type,
+      ...(avatarId ? { avatar_id: avatarId } : {}),
+    }),
   });
   if (!r.ok) {
     pc.close();

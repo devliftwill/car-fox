@@ -181,6 +181,13 @@ export default function AvatarStudio() {
   const [videoErr, setVideoErr] = useState<string | null>(null);
   const [hasSaved, setHasSaved] = useState(false);
   const [neuralMode, setNeuralMode] = useState(false);
+  // clip → GPU avatar generation
+  const [gpuGen, setGpuGen] = useState<{ taskId: string; progress: number; status: string } | null>(null);
+  const [gpuAvatarId, setGpuAvatarId] = useState<string | null>(null);
+  useEffect(() => {
+    const id = localStorage.getItem("carfox.gpuAvatarId");
+    if (id) Promise.resolve().then(() => setGpuAvatarId(id));
+  }, []);
   // In-lab webcam recorder (video only, never uploaded anywhere)
   const [recOn, setRecOn] = useState(false);
   const [recSecs, setRecSecs] = useState<number | null>(null);
@@ -428,6 +435,46 @@ export default function AvatarStudio() {
     if (videoDraft) setVideoDraft({ ...videoDraft, cfg: stamped });
   }
 
+  /** Ship the current clip to the GPU: it becomes a full MuseTalk avatar. */
+  async function generateGpuAvatar() {
+    if (!videoDraft) return;
+    const avatarId = "lab_" + Date.now().toString(36);
+    const fd = new FormData();
+    fd.append("avatar_id", avatarId);
+    fd.append("video", videoDraft.blob, "clip.webm");
+    setGpuGen({ taskId: "", progress: 0, status: "uploading" });
+    try {
+      const r = await fetch("/api/neural/avatar", { method: "POST", body: fd });
+      const j = await r.json();
+      const taskId = j?.data?.task_id;
+      if (!r.ok || !taskId) throw new Error(j?.msg || j?.error || "task create failed");
+      setGpuGen({ taskId, progress: 0, status: "pending" });
+      for (;;) {
+        await new Promise((res) => setTimeout(res, 5000));
+        const s = await fetch(`/api/neural/avatar?task=${taskId}`).then((x) => x.json()).catch(() => null);
+        const d = s?.data;
+        if (!d) continue;
+        setGpuGen({ taskId, progress: d.progress ?? 0, status: d.status ?? "running" });
+        if (d.status === "completed") {
+          localStorage.setItem("carfox.gpuAvatarId", avatarId);
+          setGpuAvatarId(avatarId);
+          setGpuGen(null);
+          setNeuralMode(true);
+          return;
+        }
+        if (d.status === "failed") throw new Error(d.error_msg || "generation failed");
+      }
+    } catch (e) {
+      setGpuGen(null);
+      setVideoErr("GPU avatar generation failed: " + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  function clearGpuAvatar() {
+    localStorage.removeItem("carfox.gpuAvatarId");
+    setGpuAvatarId(null);
+  }
+
   async function discardSaved() {
     await clearAvatar();
     setSavedAt(null);
@@ -605,7 +652,27 @@ export default function AvatarStudio() {
               <button onClick={save} className="sq-btn sq-btn--black w-full">
                 {savedAt ? "Saved ✓ (this lab only)" : "Save in this lab"}
               </button>
+              {videoDraft && !gpuGen && (
+                <button onClick={generateGpuAvatar} className="sq-btn w-full border-2 border-neutral-900 font-semibold text-neutral-900">
+                  🚀 Put this clip on the GPU face (photoreal)
+                </button>
+              )}
+              {gpuGen && (
+                <div className="rounded-lg border border-neutral-200 p-3 text-[13px] text-neutral-600">
+                  Building your GPU avatar… {gpuGen.status} {gpuGen.progress ? `${gpuGen.progress}%` : ""}
+                  <div className="mt-2 h-[6px] overflow-hidden rounded-full bg-neutral-200">
+                    <div className="h-full bg-neutral-900 transition-all" style={{ width: `${gpuGen.progress}%` }} />
+                  </div>
+                  <div className="mt-1 text-[11.5px] text-neutral-400">Takes 1–3 minutes on the GPU — don&apos;t leave the page.</div>
+                </div>
+              )}
             </>
+          )}
+          {gpuAvatarId && !gpuGen && (
+            <p className="text-[12.5px] text-neutral-500">
+              GPU avatar ready: <b>{gpuAvatarId}</b> — neural calls below use it.{" "}
+              <button onClick={clearGpuAvatar} className="underline">reset to default</button>
+            </p>
           )}
           {hasSaved && (
             <button onClick={discardSaved} className="sq-btn w-full border border-neutral-300 text-neutral-500 hover:border-neutral-900 hover:text-neutral-900">
@@ -641,9 +708,10 @@ export default function AvatarStudio() {
             </span>
           </label>
           <FoxLiveCall
-            key={(videoDraft ? videoDraft.cfg.videoUrl : img?.dataUrl.length) + ":" + neuralMode}
+            key={(videoDraft ? videoDraft.cfg.videoUrl : img?.dataUrl.length) + ":" + neuralMode + ":" + (gpuAvatarId ?? "")}
             avatar={videoDraft?.cfg ?? cfg ?? undefined}
             neural={neuralMode}
+            neuralAvatarId={gpuAvatarId ?? undefined}
           />
       </section>
     </main>
