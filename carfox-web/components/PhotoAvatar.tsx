@@ -314,7 +314,8 @@ export default function PhotoAvatar({
       cancelAnimationFrame(raf);
       clearInterval(watchdog);
     };
-  }, []); // config changes remount via key upstream
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debugTag is a dev-only constant; config changes remount via key upstream
+  }, []);
 
   return <canvas ref={canvasRef} className={className} aria-label="Custom talking avatar" role="img" />;
 }
