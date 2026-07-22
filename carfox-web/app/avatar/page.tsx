@@ -442,6 +442,16 @@ export default function AvatarStudio() {
                 <input type="file" accept="image/*,video/*" className="hidden" onChange={onFile} disabled={!!analyzing} />
               </label>
               {videoErr && <p className="text-[13px] text-red-600">{videoErr}</p>}
+              <button
+                onClick={async () => {
+                  const blob = await fetch("/demo-idle.mp4").then((r) => r.blob());
+                  void loadFromVideo(blob);
+                }}
+                disabled={!!analyzing}
+                className="sq-btn w-full border border-neutral-300 text-neutral-600 hover:border-neutral-900 hover:text-neutral-900"
+              >
+                Try the demo clip
+              </button>
               {hasSaved && (
                 <button onClick={loadSaved} className="sq-btn w-full border border-neutral-300 text-neutral-600 hover:border-neutral-900 hover:text-neutral-900">
                   Load my saved avatar
