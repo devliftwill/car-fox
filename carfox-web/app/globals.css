@@ -152,6 +152,13 @@ body {
   overflow: hidden;
 }
 
+/* Avatar Lab — studio warming indicator */
+@keyframes fox-warming {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
+}
+.fox-warming-bar { animation: fox-warming 1.6s ease-in-out infinite; }
+
 /* Avatar Studio — draggable rig pins */
 .avatar-pin {
   position: absolute; z-index: 5;

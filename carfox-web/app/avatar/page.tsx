@@ -28,15 +28,39 @@ export default function AvatarLab() {
   const recRef = useRef<{ stream?: MediaStream; rec?: MediaRecorder; chunks: Blob[]; timer?: ReturnType<typeof setInterval> }>({ chunks: [] });
 
   const [library, setLibrary] = useState<{ avatar_id: string; created: number }[]>([]);
+  // Self-waking studio: the page wakes the GPU VM and waits until it answers.
+  const [studio, setStudio] = useState<"checking" | "waking" | "ready" | "error">("checking");
 
   useEffect(() => {
     const id = localStorage.getItem("carfox.gpuAvatarId");
     if (id) Promise.resolve().then(() => setGpuAvatarId(id));
-    // saved avatars live on the GPU box — no need to re-record between visits
-    fetch("/api/neural/avatar?list=1")
-      .then((r) => r.json())
-      .then((j) => setLibrary(j?.avatars ?? []))
-      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    let tries = 0;
+    const tick = async () => {
+      const j = await fetch("/api/neural/wake").then((r) => r.json()).catch(() => null);
+      if (!alive) return;
+      if (j?.status === "ready") {
+        setStudio("ready");
+        fetch("/api/neural/avatar?list=1")
+          .then((r) => r.json())
+          .then((x) => alive && setLibrary(x?.avatars ?? []))
+          .catch(() => {});
+        return;
+      }
+      if (!j || j.status === "error" || ++tries > 40) {
+        setStudio("error");
+        return;
+      }
+      setStudio("waking");
+      setTimeout(tick, 5000);
+    };
+    void tick();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   function pickAvatar(id: string) {
@@ -236,8 +260,34 @@ export default function AvatarLab() {
         the corner-dock fox is untouched.
       </p>
 
+      {/* Studio state gate — the GPU wakes itself when you arrive */}
+      {studio !== "ready" && (
+        <section className="mx-auto mt-12 w-full max-w-[420px] rounded-2xl border border-neutral-200 p-8 text-center">
+          {studio === "checking" && <p className="text-[14px] text-neutral-500">Checking the studio…</p>}
+          {studio === "waking" && (
+            <>
+              <p className="text-[15px] font-medium">Warming up the studio…</p>
+              <p className="mt-1 text-[13px] text-neutral-500">
+                The GPU wakes on demand — about 90 seconds. This page will continue automatically.
+              </p>
+              <div className="mt-4 h-[6px] overflow-hidden rounded-full bg-neutral-200">
+                <div className="fox-warming-bar h-full w-1/3 rounded-full bg-neutral-900" />
+              </div>
+            </>
+          )}
+          {studio === "error" && (
+            <>
+              <p className="text-[14.5px] font-medium text-red-600">The studio didn&apos;t come up.</p>
+              <button onClick={() => window.location.reload()} className="sq-btn sq-btn--black mt-4">
+                Try again
+              </button>
+            </>
+          )}
+        </section>
+      )}
+
       {/* Step 1 — get a clip */}
-      {!gpuAvatarId && !busy && (
+      {studio === "ready" && !gpuAvatarId && !busy && (
         <section className="mt-10">
           {recOn ? (
             <div className="relative mx-auto w-full max-w-[420px] overflow-hidden rounded-2xl bg-neutral-900 shadow-2xl" style={{ aspectRatio: "4 / 5" }}>
@@ -313,7 +363,7 @@ export default function AvatarLab() {
       {err && <p className="mx-auto mt-4 max-w-[420px] text-center text-[13px] text-red-600">{err}</p>}
 
       {/* Step 3 — talk to it */}
-      {gpuAvatarId && !busy && (
+      {studio === "ready" && gpuAvatarId && !busy && (
         <section className="mt-10">
           <div className="mb-4 flex items-center justify-center gap-3 text-[13px] text-neutral-500">
             <span>
