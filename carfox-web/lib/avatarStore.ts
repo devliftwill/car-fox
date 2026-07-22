@@ -6,11 +6,24 @@
  * the same config renders correctly at any display scale.
  */
 
+export type Pt = { x: number; y: number };
+
 export type AvatarRig = {
   /** Mouth center, width (fraction of image width), and roll angle (radians). */
   mouth: { x: number; y: number; w: number; angle: number };
   eyeL: { x: number; y: number; r: number };
   eyeR: { x: number; y: number; r: number };
+  /**
+   * Detected face contours (normalized) — present when MediaPipe found the
+   * face. They let the renderer warp the photo's own lips/eyelids instead of
+   * approximating; manual rigs go without and use synthesized shapes.
+   */
+  contours?: {
+    lipInnerTop: Pt[]; // right corner → top arc → left corner
+    lipInnerBottom: Pt[]; // left corner → bottom arc → right corner
+    eyeL: Pt[]; // 6-pt ring
+    eyeR: Pt[];
+  };
 };
 
 export type AvatarConfig = {

@@ -22,6 +22,7 @@ import {
   saveAvatar,
   type AvatarConfig,
   type AvatarRig,
+  type Pt,
 } from "@/lib/avatarStore";
 import { autoRig } from "@/lib/faceAutoRig";
 
@@ -69,17 +70,64 @@ const PIN_LABELS: Record<keyof Pins, string> = {
 };
 
 /**
+ * Detected lip/eye contours must follow the pins when the user drags them:
+ * similarity-transform each contour from the as-detected rig onto the
+ * current one (pixel space — normalized coords skew on non-square images).
+ */
+function transformContours(base: AvatarRig, cur: AvatarRig, W: number, H: number): AvatarRig["contours"] {
+  const ct = base.contours;
+  if (!ct) return undefined;
+  const k = cur.mouth.w / base.mouth.w;
+  const dA = cur.mouth.angle - base.mouth.angle;
+  const cos = Math.cos(dA) * k, sin = Math.sin(dA) * k;
+  const sCx = base.mouth.x * W, sCy = base.mouth.y * H;
+  const dCx = cur.mouth.x * W, dCy = cur.mouth.y * H;
+  const mapLip = (p: Pt): Pt => {
+    const px = p.x * W - sCx, py = p.y * H - sCy;
+    return { x: (dCx + px * cos - py * sin) / W, y: (dCy + px * sin + py * cos) / H };
+  };
+  const mapEye = (b: { x: number; y: number; r: number }, c: { x: number; y: number; r: number }) => {
+    const k2 = c.r / (b.r || 1e-6);
+    return (p: Pt): Pt => ({
+      x: (c.x * W + (p.x - b.x) * W * k2) / W,
+      y: (c.y * H + (p.y - b.y) * H * k2) / H,
+    });
+  };
+  return {
+    lipInnerTop: ct.lipInnerTop.map(mapLip),
+    lipInnerBottom: ct.lipInnerBottom.map(mapLip),
+    eyeL: ct.eyeL.map(mapEye(base.eyeL, cur.eyeL)),
+    eyeR: ct.eyeR.map(mapEye(base.eyeR, cur.eyeR)),
+  };
+}
+
+/**
  * When the detected face is small (wide shot), zoom in: crop a portrait
  * around the face and remap the rig into crop space. Users upload group
  * photos and full-body shots — a talking speck isn't a good avatar.
+ *
+ * Crops from the ORIGINAL source (native resolution) — cropping the 640px
+ * working copy produced blurry postage-stamp avatars.
  */
 async function autoCropToFace(
-  dataUrl: string,
-  W: number,
-  H: number,
+  origSrc: Blob | string,
   rig: AvatarRig
 ): Promise<{ img: { dataUrl: string; w: number; h: number }; rig: AvatarRig } | null> {
   if (rig.mouth.w >= 0.13) return null; // face already fills enough of the frame
+  const url = typeof origSrc === "string" ? origSrc : URL.createObjectURL(origSrc);
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.src = url;
+  try {
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = () => rej(new Error("orig load failed"));
+    });
+  } catch {
+    if (typeof origSrc !== "string") URL.revokeObjectURL(url);
+    return null;
+  }
+  const W = img.naturalWidth, H = img.naturalHeight;
   const eyeSpanPx = Math.hypot((rig.eyeR.x - rig.eyeL.x) * W, (rig.eyeR.y - rig.eyeL.y) * H);
   const faceCx = ((rig.eyeL.x + rig.eyeR.x) / 2 + rig.mouth.x) / 2 * W;
   const cropW = Math.min(W, Math.max(eyeSpanPx * 4.6, rig.mouth.w * W * 4.4));
@@ -87,9 +135,6 @@ async function autoCropToFace(
   const x0 = Math.max(0, Math.min(W - cropW, faceCx - cropW / 2));
   // eyes should land ~42% from the crop top
   const y0 = Math.max(0, Math.min(H - cropH, (rig.eyeL.y + rig.eyeR.y) / 2 * H - cropH * 0.42));
-  const img = new Image();
-  img.src = dataUrl;
-  await new Promise((r) => (img.onload = r));
   const scale = Math.min(1, 640 / Math.max(cropW, cropH));
   const cw = Math.round(cropW * scale);
   const ch = Math.round(cropH * scale);
@@ -97,6 +142,7 @@ async function autoCropToFace(
   canvas.width = cw;
   canvas.height = ch;
   canvas.getContext("2d")!.drawImage(img, x0, y0, cropW, cropH, 0, 0, cw, ch);
+  if (typeof origSrc !== "string") URL.revokeObjectURL(url);
   const remap = (p: { x: number; y: number }) => ({
     x: (p.x * W - x0) / cropW,
     y: (p.y * H - y0) / cropH,
@@ -107,6 +153,14 @@ async function autoCropToFace(
       mouth: { ...remap(rig.mouth), w: (rig.mouth.w * W) / cropW, angle: rig.mouth.angle },
       eyeL: { ...remap(rig.eyeL), r: (rig.eyeL.r * W) / cropW },
       eyeR: { ...remap(rig.eyeR), r: (rig.eyeR.r * W) / cropW },
+      contours: rig.contours
+        ? {
+            lipInnerTop: rig.contours.lipInnerTop.map(remap),
+            lipInnerBottom: rig.contours.lipInnerBottom.map(remap),
+            eyeL: rig.contours.eyeL.map(remap),
+            eyeR: rig.contours.eyeR.map(remap),
+          }
+        : undefined,
     },
   };
 }
@@ -114,11 +168,14 @@ async function autoCropToFace(
 export default function AvatarStudio() {
   const [img, setImg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
   const [pins, setPins] = useState<Pins | null>(null);
+  // As-detected rig (carries lip/eye contours) — pin edits transform from it.
+  const [baseRig, setBaseRig] = useState<AvatarRig | null>(null);
   const [detect, setDetect] = useState<Detect>("idle");
   const [talking, setTalking] = useState(true);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<keyof Pins | null>(null);
+  const origSrcRef = useRef<Blob | string | null>(null); // full-res source for quality crops
   const talkingRef = useRef(talking);
   useEffect(() => {
     talkingRef.current = talking;
@@ -133,10 +190,14 @@ export default function AvatarStudio() {
     () => false
   );
 
-  const rig = useMemo(
-    () => (img && pins ? pinsToRig(pins, img.w, img.h) : null),
-    [img, pins]
-  );
+  const rig = useMemo(() => {
+    if (!img || !pins) return null;
+    const cur = pinsToRig(pins, img.w, img.h);
+    if (baseRig?.contours) {
+      cur.contours = transformContours(baseRig, cur, img.w, img.h);
+    }
+    return cur;
+  }, [img, pins, baseRig]);
   const cfg: AvatarConfig | null = useMemo(
     () => (img && rig ? { image: img.dataUrl, w: img.w, h: img.h, rig, createdAt: savedAt ?? 0 } : null),
     [img, rig, savedAt]
@@ -144,6 +205,9 @@ export default function AvatarStudio() {
 
   // Synthetic "babble" driver for the preview — no mic, no API, just vibes.
   const sample = useCallback((): FoxSample => {
+    // QA hook: window.__avatarPose = {open, round} freezes a deterministic pose.
+    const pose = (window as unknown as { __avatarPose?: { open: number; round: number } }).__avatarPose;
+    if (pose) return { mouth: { open: pose.open, round: pose.round, energy: 0.5, speaking: true } };
     if (!talkingRef.current) return { mouth: null };
     const t = performance.now() / 1000;
     const syllable = Math.abs(Math.sin(t * 6.1));
@@ -160,16 +224,19 @@ export default function AvatarStudio() {
     await new Promise((r) => (el.onload = r));
     const found = await autoRig(el, w, h);
     if (found) {
-      // Wide shot? Zoom to the face and remap the rig.
-      const cropped = await autoCropToFace(dataUrl, w, h, found);
+      // Wide shot? Zoom to the face (from the full-res source) and remap.
+      const cropped = await autoCropToFace(origSrcRef.current ?? dataUrl, found);
       if (cropped) {
         setImg(cropped.img);
+        setBaseRig(cropped.rig);
         setPins(rigToPins(cropped.rig, cropped.img.w, cropped.img.h));
       } else {
+        setBaseRig(found);
         setPins(rigToPins(found, w, h));
       }
       setDetect("found");
     } else {
+      setBaseRig(null);
       setPins(rigToPins(defaultRig(), w, h));
       setDetect("none");
     }
@@ -177,6 +244,7 @@ export default function AvatarStudio() {
 
   const loadFrom = useCallback(
     async (src: Blob | string) => {
+      origSrcRef.current = src;
       const r = await importImage(src);
       setImg(r);
       setSavedAt(null);
@@ -234,6 +302,7 @@ export default function AvatarStudio() {
     const saved = loadAvatar();
     if (!saved) return;
     setImg({ dataUrl: saved.image, w: saved.w, h: saved.h });
+    setBaseRig(saved.rig.contours ? saved.rig : null);
     setPins(rigToPins(saved.rig, saved.w, saved.h));
     setSavedAt(saved.createdAt);
     setDetect("found");
@@ -260,7 +329,7 @@ export default function AvatarStudio() {
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
             >
-              <PhotoAvatar key={img.dataUrl.length + ":" + img.dataUrl.slice(-32)} config={cfg} sample={sample} className="h-full w-full" />
+              <PhotoAvatar key={img.dataUrl.length + ":" + img.dataUrl.slice(-32)} config={cfg} sample={sample} className="h-full w-full" debugTag="studio" />
               {pins &&
                 (Object.keys(pins) as (keyof Pins)[]).map((k) => (
                   <button

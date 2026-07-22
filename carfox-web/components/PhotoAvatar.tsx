@@ -1,48 +1,53 @@
 "use client";
 
 /**
- * PhotoAvatar — turns any uploaded photo into a live talking head, entirely
- * on canvas, no servers.
+ * PhotoAvatar v2 — realism pass. The photo's OWN pixels do the talking:
  *
- * The trick is a classic animated-cutout: the photo stays intact except at
- * the rigged mouth, where three layers composite each frame —
+ *  - Jaw & lips: a mesh warp (lib/photoWarp) displaces the chin/lower-lip
+ *    region downward with `open` and pulls the corners in with `round`, so
+ *    the person's actual mouth stretches open — no painted cartoon mouth.
+ *  - Inner mouth: revealed only inside the person's own inner-lip contour
+ *    (captured by MediaPipe at rig time, warped consistently with the mesh),
+ *    with a subtle upper-teeth band. Manual rigs get a synthesized lens.
+ *  - Blinks: the upper-eyelid skin is mesh-warped down over the eyeball
+ *    (drawn bottom-row-first so the lid overlaps the eye) — real skin
+ *    texture, not painted ellipses.
+ *  - Whole-head micro-motion: bob / sway / breathing.
  *
- *   1. the mouth cavity (dark interior + teeth + tongue) painted over the
- *      lip line, built from the SAME parametric mouthGeometry() the SVG fox
- *      uses, so visemes look identical across faces;
- *   2. a "jaw" cutout of the photo (lower lip + chin) that slides down as
- *      the mouth opens, revealing the cavity — the JibJab effect;
- *   3. eyelid ellipses in locally-sampled skin tones for blinks.
- *
- * Plus head bob/sway/breathing on the whole image. Driven by the same
- * `sample()` params as FoxAvatar (FoxLipsync in a live call).
+ * Driven by the same `sample()` viseme params as the SVG fox.
  */
 import { useEffect, useRef } from "react";
 import type { FoxSample } from "./FoxAvatar";
-import { mouthGeometry } from "@/lib/foxMouth";
-import type { AvatarConfig } from "@/lib/avatarStore";
+import { drawWarpedGrid, smooth, type Vec } from "@/lib/photoWarp";
+import type { AvatarConfig, Pt } from "@/lib/avatarStore";
 
-const MOUTH_UNITS = 116; // closed-mouth width of mouthGeometry's local space
-
-/** Average color of a pixel region, skipping transparent pixels. */
-function sampleColor(data: ImageData, fallback: string): string {
-  let r = 0, g = 0, b = 0, n = 0;
-  for (let i = 0; i < data.data.length; i += 4) {
-    if (data.data[i + 3] < 200) continue;
-    r += data.data[i]; g += data.data[i + 1]; b += data.data[i + 2]; n++;
+/** Synthesized inner-lip lens for manual rigs (no detected contours). */
+function synthLens(halfW: number): { top: Vec[]; bottom: Vec[] } {
+  const n = 11;
+  const top: Vec[] = [];
+  const bottom: Vec[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1); // 0..1
+    const u = (t * 2 - 1) * halfW * 0.72;
+    const bump = Math.sin(Math.acos(Math.min(1, Math.abs(t * 2 - 1)))); // half-ellipse
+    // top runs right→left, bottom left→right (matching detected ordering)
+    top.push({ x: -u, y: -bump * halfW * 0.05 });
+    bottom.push({ x: u, y: bump * halfW * 0.09 });
   }
-  if (!n) return fallback;
-  return `rgb(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(b / n)})`;
+  return { top, bottom };
 }
 
 export default function PhotoAvatar({
   config,
   sample,
   className,
+  debugTag,
 }: {
   config: AvatarConfig;
   sample?: () => FoxSample;
   className?: string;
+  /** Dev: expose per-frame internals at window.__paDbg[debugTag]. */
+  debugTag?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sampleRef = useRef(sample);
@@ -57,8 +62,8 @@ export default function PhotoAvatar({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const cfg = cfgRef.current;
-    const W = cfg.w, H = cfg.h;
+    const cfg0 = cfgRef.current;
+    const W = cfg0.w, H = cfg0.h;
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext("2d");
@@ -66,47 +71,31 @@ export default function PhotoAvatar({
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const img = new Image();
-    img.src = cfg.image;
-
-    // Colors sampled once the photo decodes: background from the border,
-    // eyelids from a patch just above each eye (≈ the skin that would cover it).
-    let bgColor = "#0d55b5";
-    let lidL = "#caa88a", lidR = "#caa88a";
+    img.src = cfg0.image;
+    let bgColor = "#101418";
     let ready = false;
     img.onload = () => {
       try {
         const probe = document.createElement("canvas");
-        probe.width = W; probe.height = H;
+        probe.width = W;
+        probe.height = H;
         const pctx = probe.getContext("2d")!;
         pctx.drawImage(img, 0, 0, W, H);
         const border = pctx.getImageData(0, 0, W, Math.max(2, Math.round(H * 0.04)));
-        bgColor = sampleColor(border, bgColor);
-        const eyePatch = (ex: number, ey: number, er: number) => {
-          const px = Math.round(ex * W - er * W);
-          const py = Math.round(ey * H - er * W * 2.2);
-          const pw = Math.max(2, Math.round(er * W * 2));
-          const ph = Math.max(2, Math.round(er * W * 0.8));
-          return sampleColor(
-            pctx.getImageData(
-              Math.max(0, Math.min(W - pw, px)),
-              Math.max(0, Math.min(H - ph, py)),
-              pw, ph
-            ),
-            "#caa88a"
-          );
-        };
-        lidL = eyePatch(cfg.rig.eyeL.x, cfg.rig.eyeL.y, cfg.rig.eyeL.r);
-        lidR = eyePatch(cfg.rig.eyeR.x, cfg.rig.eyeR.y, cfg.rig.eyeR.r);
-      } catch {
-        // canvas tainted or probe failure — defaults are fine
-      }
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let i = 0; i < border.data.length; i += 4) {
+          if (border.data[i + 3] < 200) continue;
+          r += border.data[i]; g += border.data[i + 1]; b += border.data[i + 2]; n++;
+        }
+        if (n) bgColor = `rgb(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(b / n)})`;
+      } catch {}
       ready = true;
     };
 
     // Animation state
     let raf = 0;
     let lastTick = 0;
-    let blinkAt = performance.now() + 1200 + Math.random() * 2200;
+    let blinkAt = performance.now() + 1400 + Math.random() * 2400;
     let blinkT = -1;
     let doubleBlink = false;
     const mouth = { open: 0, round: 0 };
@@ -116,43 +105,42 @@ export default function PhotoAvatar({
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(tick);
       if (!ready) return;
+      const cfg = cfgRef.current;
+      const rig = cfg.rig;
       const now = performance.now();
       const t = now / 1000;
       const s: FoxSample = sampleRef.current?.() ?? { mouth: null };
       const m = s.mouth;
       const energy = m?.energy ?? 0;
 
-      const openT = m ? m.open : 0;
-      const roundT = m ? m.round : mouth.round * 0.9;
-      mouth.open += (openT - mouth.open) * 0.5;
-      mouth.round += (roundT - mouth.round) * 0.35;
+      mouth.open += ((m ? m.open : 0) - mouth.open) * 0.5;
+      mouth.round += ((m ? m.round : mouth.round * 0.9) - mouth.round) * 0.35;
 
-      // blink scheduler (same feel as the fox)
-      let lid = 0;
+      // blink scheduler
+      let blink = 0;
       if (blinkT >= 0) {
-        const p = (now - blinkT) / 140;
+        const p = (now - blinkT) / 150;
         if (p >= 1) {
-          if (doubleBlink) { doubleBlink = false; blinkT = now + 70; }
-          else { blinkT = -1; blinkAt = now + 2200 + Math.random() * 3800; }
+          if (doubleBlink) { doubleBlink = false; blinkT = now + 80; }
+          else { blinkT = -1; blinkAt = now + 2400 + Math.random() * 3800; }
         } else if (p >= 0) {
-          lid = Math.sin(Math.min(1, p) * Math.PI);
+          blink = Math.sin(Math.min(1, p) * Math.PI);
         }
       } else if (now >= blinkAt) {
         blinkT = now;
-        doubleBlink = Math.random() < 0.12;
+        doubleBlink = Math.random() < 0.1;
       }
 
       const sway = reduceMotion ? 0 : 1;
-      const bobY = sway * (Math.sin(t * 1.4) * H * 0.006 + energy * Math.sin(t * 11) * H * 0.008);
-      const rotDeg = sway * (Math.sin(t * 0.6) * 0.8 + energy * Math.sin(t * 7.3) * 1.2);
-      const breath = 1.045 + (reduceMotion ? 0 : 0.006 * Math.sin(t * 1.1));
+      const bobY = sway * (Math.sin(t * 1.4) * H * 0.004 + energy * Math.sin(t * 11) * H * 0.006);
+      const rotDeg = sway * (Math.sin(t * 0.6) * 0.6 + energy * Math.sin(t * 7.3) * 0.9);
+      const breath = 1.04 + (reduceMotion ? 0 : 0.005 * Math.sin(t * 1.1));
 
       ctx.clearRect(0, 0, W, H);
       ctx.fillStyle = bgColor;
       ctx.fillRect(0, 0, W, H);
 
       ctx.save();
-      // head pivot at bottom-center; slight overscale hides rotated edges
       ctx.translate(W / 2, H);
       ctx.rotate((rotDeg * Math.PI) / 180);
       ctx.scale(breath, breath);
@@ -161,75 +149,157 @@ export default function PhotoAvatar({
 
       ctx.drawImage(img, 0, 0, W, H);
 
-      const rig = cfgRef.current.rig;
+      // ------- mouth & jaw warp -------
       const mx = rig.mouth.x * W;
       const my = rig.mouth.y * H;
-      const scale = (rig.mouth.w * W) / MOUTH_UNITS;
-      const mtx = new DOMMatrix()
-        .translateSelf(mx, my)
-        .rotateSelf((rig.mouth.angle * 180) / Math.PI)
-        .scaleSelf(scale, scale);
+      const halfW = (rig.mouth.w * W) / 2;
+      const ang = rig.mouth.angle;
+      const cosA = Math.cos(ang), sinA = Math.sin(ang);
+      const drop = mouth.open * halfW * 0.62;
+      const raise = drop * 0.14;
+      const pull = mouth.round * halfW * 0.2;
 
-      if (mouth.open > 0.035) {
-        const g = mouthGeometry(mouth.open, mouth.round);
-        const cavity = new Path2D();
-        cavity.addPath(new Path2D(g.cavity), mtx);
-
-        // 1) cavity interior
-        ctx.fillStyle = "#2b120c";
-        ctx.fill(cavity);
-        // teeth + tongue, clipped inside the cavity
-        ctx.save();
-        ctx.clip(cavity);
-        const teeth = new Path2D();
-        teeth.addPath(new Path2D(g.teeth), mtx);
-        ctx.fillStyle = "#f3efe6";
-        ctx.fill(teeth);
-        if (mouth.open > 0.2) {
-          const tongue = new Path2D();
-          const tl = new Path2D();
-          tl.ellipse(0, g.botY - 8, g.hw * 0.6, 6 + 16 * mouth.open, 0, 0, Math.PI * 2);
-          tongue.addPath(tl, mtx);
-          ctx.fillStyle = "#d8535f";
-          ctx.fill(tongue);
+      // The jaw ramp must start at the ACTUAL lip seam, not the pin line —
+      // mouth-corner pins often sit a few px below the seam, which parked the
+      // lower lip in the ramp's dead zone (chin moved, lips barely parted).
+      let seamV = 0;
+      if (rig.contours) {
+        let sum = 0, n = 0;
+        for (const arr of [rig.contours.lipInnerTop, rig.contours.lipInnerBottom]) {
+          for (const p of arr) {
+            const rx = p.x * W - mx, ry = p.y * H - my;
+            sum += -rx * sinA + ry * cosA;
+            n++;
+          }
         }
-        ctx.restore();
-        // soft lip edge around the cavity
-        ctx.strokeStyle = "rgba(43,18,12,0.55)";
-        ctx.lineWidth = Math.max(1.5, scale * 2.5);
-        ctx.stroke(cavity);
-
-        // 2) jaw cutout — photo's lower lip + chin slides down with `open`
-        const jawHw = 78, jawH = 92;
-        const jawLocal = new Path2D(
-          `M ${-jawHw} 2 Q 0 ${2 + jawHw * 0.24} ${jawHw} 2 ` +
-            `Q ${jawHw * 1.06} ${jawH * 0.6} 0 ${jawH} ` +
-            `Q ${-jawHw * 1.06} ${jawH * 0.6} ${-jawHw} 2 Z`
-        );
-        const jaw = new Path2D();
-        jaw.addPath(jawLocal, mtx);
-        const dropPx = mouth.open * 30 * scale;
-        const a = rig.mouth.angle;
-        ctx.save();
-        ctx.clip(jaw);
-        ctx.translate(-Math.sin(a) * dropPx, Math.cos(a) * dropPx);
-        ctx.drawImage(img, 0, 0, W, H);
-        ctx.restore();
+        if (n) seamV = sum / n;
       }
 
-      // 3) blinks
-      if (lid > 0.06) {
-        for (const [eye, color] of [
-          [rig.eyeL, lidL],
-          [rig.eyeR, lidR],
-        ] as const) {
+      const mouthDisplace = (x: number, y: number): Vec => {
+        // mouth-local frame (u across lips, v down from the lip seam)
+        const rx = x - mx, ry = y - my;
+        const u = rx * cosA + ry * sinA;
+        const v = -rx * sinA + ry * cosA - seamV;
+        const gx = 1 - smooth(halfW * 0.9, halfW * 2.1, Math.abs(u));
+        // Tight ramp: everything ≥2px below the seam rides the jaw almost
+        // rigidly, so the stretch "smear" collapses to a couple of px that
+        // the cavity polygon then covers.
+        const jawFac = smooth(-halfW * 0.01, halfW * 0.06, v) * (1 - smooth(halfW * 1.7, halfW * 2.5, v));
+        const upFac = smooth(-halfW * 0.9, -halfW * 0.12, v) * (1 - smooth(-halfW * 0.12, halfW * 0.06, v));
+        const dv = drop * gx * jawFac - raise * gx * upFac;
+        const cornerFac = smooth(halfW * 0.25, halfW * 0.95, Math.abs(u)) * (1 - smooth(halfW * 1.1, halfW * 1.8, Math.abs(u)));
+        const lipBand = 1 - smooth(halfW * 0.15, halfW * 0.8, Math.abs(v));
+        const du = -Math.sign(u) * pull * cornerFac * lipBand;
+        return { x: du * cosA - dv * sinA, y: du * sinA + dv * cosA };
+      };
+
+      const dbg: Record<string, unknown> = { open: mouth.open, sampled: !!m, halfW, drop, drew: "none" };
+      if (debugTag) {
+        const w = window as unknown as { __paDbg?: Record<string, unknown> };
+        w.__paDbg = w.__paDbg || {};
+        w.__paDbg[debugTag] = dbg;
+      }
+
+      if (mouth.open > 0.02) {
+        // inner-mouth cavity FIRST in z-order terms: we draw base image, then
+        // warped mesh (stretched lip pixels), then cavity on top of the smear.
+        drawWarpedGrid(
+          ctx, img, W, H,
+          { x0: mx - halfW * 2.4, y0: my - halfW * 1.2, x1: mx + halfW * 2.4, y1: my + halfW * 2.8 },
+          12, 10, mouthDisplace
+        );
+
+        // contours in px (detected) or synthesized lens (manual rig)
+        let topArc: Vec[], bottomArc: Vec[];
+        if (rig.contours) {
+          topArc = rig.contours.lipInnerTop.map((p: Pt) => ({ x: p.x * W, y: p.y * H }));
+          bottomArc = rig.contours.lipInnerBottom.map((p: Pt) => ({ x: p.x * W, y: p.y * H }));
+        } else {
+          const lens = synthLens(halfW);
+          const toImg = (p: Vec): Vec => ({ x: mx + p.x * cosA - p.y * sinA, y: my + p.x * sinA + p.y * cosA });
+          topArc = lens.top.map(toImg);
+          bottomArc = lens.bottom.map(toImg);
+        }
+        const dTop = topArc.map((p) => { const d = mouthDisplace(p.x, p.y); return { x: p.x + d.x, y: p.y + d.y }; });
+        // The bottom inner lip IS the lower lip — at rest it coincides with
+        // the seam, where any vertical field is ~zero by construction. Drop
+        // it explicitly, tapered corner→center into a natural lens (the
+        // field still contributes the corner-pull in x).
+        const nB = bottomArc.length - 1;
+        const dBot = bottomArc.map((p, i) => {
+          const wArc = Math.pow(Math.sin((Math.PI * i) / nB), 0.8);
+          const dv = drop * 0.92 * wArc;
+          const d = mouthDisplace(p.x, p.y);
+          return { x: p.x + d.x - sinA * dv, y: p.y + cosA * dv };
+        });
+
+        // open enough to see inside?
+        const gap = Math.hypot(dBot[5].x - dTop[5].x, dBot[5].y - dTop[5].y);
+        dbg.gap = gap;
+        dbg.gapMin = halfW * 0.06;
+        dbg.topMid = dTop[5];
+        dbg.botMid = dBot[5];
+        if (gap > halfW * 0.06) {
+          dbg.drew = "cavity";
+          const cavity = new Path2D();
+          cavity.moveTo(dBot[0].x, dBot[0].y);
+          for (let i = 1; i < dBot.length; i++) cavity.lineTo(dBot[i].x, dBot[i].y);
+          for (let i = 1; i < dTop.length; i++) cavity.lineTo(dTop[i].x, dTop[i].y);
+          cavity.closePath();
+
+          const grad = ctx.createLinearGradient(mx - sinA * halfW, my - cosA * halfW * 0.3, mx + sinA * halfW, my + cosA * halfW * 1.2);
+          grad.addColorStop(0, "#3d1b12");
+          grad.addColorStop(1, "#160a06");
+          ctx.fillStyle = grad;
+          ctx.fill(cavity);
+
+          // upper teeth — attached to the (slightly raised) top lip contour;
+          // a narrow peek reads natural, a tall band reads like dentures
+          if (mouth.open > 0.22) {
+            const teethH = Math.min(drop * 0.3, halfW * 0.15) * (1 - mouth.round * 0.45);
+            const ox = -sinA * teethH, oy = cosA * teethH;
+            ctx.save();
+            ctx.clip(cavity);
+            const teeth = new Path2D();
+            teeth.moveTo(dTop[dTop.length - 1].x, dTop[dTop.length - 1].y);
+            for (let i = dTop.length - 2; i >= 0; i--) teeth.lineTo(dTop[i].x, dTop[i].y);
+            for (let i = 0; i < dTop.length; i++) teeth.lineTo(dTop[i].x + ox, dTop[i].y + oy);
+            teeth.closePath();
+            ctx.fillStyle = "rgba(228, 219, 205, 0.96)";
+            ctx.fill(teeth);
+            // soft shadow under the teeth edge
+            ctx.strokeStyle = "rgba(0,0,0,0.18)";
+            ctx.lineWidth = Math.max(1, halfW * 0.03);
+            ctx.beginPath();
+            ctx.moveTo(dTop[dTop.length - 1].x + ox, dTop[dTop.length - 1].y + oy);
+            for (let i = dTop.length - 2; i >= 0; i--) ctx.lineTo(dTop[i].x + ox, dTop[i].y + oy);
+            ctx.stroke();
+            ctx.restore();
+          }
+          // soft lip shadow around the opening
+          ctx.strokeStyle = "rgba(30, 10, 6, 0.35)";
+          ctx.lineWidth = Math.max(1, halfW * 0.035);
+          ctx.stroke(cavity);
+        }
+      }
+
+      // ------- blinks: upper-lid skin warped down over the eye -------
+      if (blink > 0.05) {
+        for (const eye of [rig.eyeL, rig.eyeR]) {
           const ex = eye.x * W, ey = eye.y * H, er = eye.r * W;
-          ctx.save();
-          ctx.beginPath();
-          ctx.ellipse(ex, ey, er * 1.5, Math.max(0.5, er * 1.15 * lid), 0, 0, Math.PI * 2);
-          ctx.fillStyle = color;
-          ctx.fill();
-          ctx.restore();
+          const lidDrop = blink * er * 1.5;
+          const upperLidY = ey - er * 0.55;
+          const lidDisplace = (x: number, y: number): Vec => {
+            const gx = 1 - smooth(er * 1.1, er * 2.0, Math.abs(x - ex));
+            const ramp = smooth(ey - er * 2.4, ey - er * 1.3, y);
+            const fade = 1 - smooth(upperLidY, ey + er * 0.5, y);
+            return { x: 0, y: lidDrop * gx * Math.min(ramp, fade) };
+          };
+          drawWarpedGrid(
+            ctx, img, W, H,
+            { x0: ex - er * 2.1, y0: ey - er * 2.6, x1: ex + er * 2.1, y1: ey + er * 1.6 },
+            8, 8, lidDisplace, "bottomFirst"
+          );
         }
       }
 
