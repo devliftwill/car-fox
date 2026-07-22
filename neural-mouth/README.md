@@ -68,3 +68,22 @@ gcloud compute instances create fox-neural-mouth \
 WebGPU inference of a wav2lip-class model is possible in research terms but
 wildly device-dependent (fails on mobile/integrated GPUs) and well below
 MuseTalk quality. A small owned GPU is the reliable "from scratch" answer.
+
+---
+
+## AS BUILT (2026-07-22) — live
+
+- **VM**: `fox-neural-mouth`, us-central1-a, n1-standard-8 + **T4** on-demand
+  (~$0.55/hr; L4 had a multi-region stockout the day of the build — re-shop
+  `g2-standard-4` later for +40% fps). Public IP **136.113.13.127**.
+- **Service**: `fox-neural.service` (systemd, enabled) → LiveTalking
+  `app.py --transport webrtc --model wav2lip --avatar_id carfox_customer`.
+- **Avatar**: generated on-VM from the lab's Seedance idle clip:
+  `python -m avatars.wav2lip.genavatar --video_path ~/demo-idle.mp4 --avatar_id carfox_customer --img_size 256`
+  (run from `~/LiveTalking`; don't start the server until `coords.pkl` exists).
+- **Web**: /avatar → "Neural GPU mouth" checkbox; relays at `/api/neural/*`
+  (env `FOX_NEURAL_URL`, falls back to the IP above).
+- **Start/stop** (billing): `gcloud compute instances start|stop fox-neural-mouth --zone us-central1-a`
+  — the lab falls back to local avatars whenever it's stopped.
+- **Next quality step**: MuseTalk mode (better mouth region than wav2lip256)
+  per the plan above; weights + `--model musetalk` on the same box.
