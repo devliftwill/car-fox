@@ -90,6 +90,7 @@ export default function FoxLiveCall({
   const [tipIdx, setTipIdx] = useState(0);
   const [draft, setDraft] = useState("");
   const [neuralOn, setNeuralOn] = useState(false);
+  const [neuralFailed, setNeuralFailed] = useState(false);
   const [neuralAspect, setNeuralAspect] = useState("9 / 16");
   const neuralVideoRef = useRef<HTMLVideoElement | null>(null);
   const mutedRef = useRef(false);
@@ -211,6 +212,7 @@ export default function FoxLiveCall({
           setNeuralOn(true);
         } catch (e) {
           console.warn("neural connect failed:", e);
+          setNeuralFailed(true);
           setStatus("GPU face offline — using the local avatar this call.");
         }
       }
@@ -453,6 +455,7 @@ export default function FoxLiveCall({
     st.utterBuf = [];
     st.utterLen = 0;
     setNeuralOn(false);
+    setNeuralFailed(false);
     st.sources.forEach((src) => { try { src.stop(); } catch {} });
     st.sources = [];
     try { st.micStream?.getTracks().forEach((t) => t.stop()); } catch {}
@@ -510,6 +513,12 @@ export default function FoxLiveCall({
           <PhotoAvatar key={avatar.createdAt} config={avatar} sample={sampleFox} className="h-full w-full" />
         ) : (
           <FoxAvatar sample={sampleFox} className="h-full w-full" />
+        )}
+        {neuralFailed && phase !== "idle" && (
+          <div className="absolute inset-x-0 top-0 z-10 bg-amber-400/95 px-3 py-2 text-center text-[12.5px] font-semibold leading-snug text-black">
+            ⚠️ GPU face offline — this is the LOCAL fallback, not the neural avatar. Start the
+            fox-neural-mouth VM, then restart this call.
+          </div>
         )}
         {caption && phase === "live" && (
           <div className="fox-caption">
