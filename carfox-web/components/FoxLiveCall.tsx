@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getCar, money, km, type Car } from "@/lib/cars";
 import { FoxLipsync, type FoxMouthParams } from "@/lib/foxLipsync";
 import type { AvatarConfig } from "@/lib/avatarStore";
+import { connectNeuralAvatar, type NeuralSession } from "@/lib/neuralAvatar";
 import FoxAvatar, { type FoxSample } from "./FoxAvatar";
 import PhotoAvatar from "./PhotoAvatar";
 import VideoAvatar from "./VideoAvatar";
@@ -56,6 +57,7 @@ export default function FoxLiveCall({
   compact = false,
   autoStart = false,
   avatar,
+  neural = false,
 }: {
   vehicleSlug?: string;
   compact?: boolean;
@@ -66,6 +68,12 @@ export default function FoxLiveCall({
    * saved in the Avatar Lab.
    */
   avatar?: AvatarConfig;
+  /**
+   * Sandbox-only: route Gemini's voice through the self-hosted GPU lip-sync
+   * server (LiveTalking) and render its WebRTC stream — voice and lips come
+   * back already synced. Falls back to the local avatar if the VM is down.
+   */
+  neural?: boolean;
 }) {
   const car = vehicleSlug ? getCar(vehicleSlug) : undefined;
   const carRef = useRef(car);
@@ -81,6 +89,9 @@ export default function FoxLiveCall({
   const [speakingUi, setSpeakingUi] = useState(false);
   const [tipIdx, setTipIdx] = useState(0);
   const [draft, setDraft] = useState("");
+  const [neuralOn, setNeuralOn] = useState(false);
+  const [neuralAspect, setNeuralAspect] = useState("9 / 16");
+  const neuralVideoRef = useRef<HTMLVideoElement | null>(null);
   const mutedRef = useRef(false);
   const startingRef = useRef(false);
 
@@ -91,13 +102,16 @@ export default function FoxLiveCall({
     micStream?: MediaStream;
     lipsync?: FoxLipsync;
     master?: GainNode;
+    neuralSess?: NeuralSession;
+    utterBuf: Int16Array[];
+    utterLen: number;
     playhead: number;
     sources: AudioBufferSourceNode[];
     micLevel: number;
     lastMouth: FoxMouthParams | null;
     utterance: string;
     dbg: { msgs: number; audioParts: number; schedSec: number; interrupts: number };
-  }>({ playhead: 0, sources: [], micLevel: 0, lastMouth: null, utterance: "", dbg: { msgs: 0, audioParts: 0, schedSec: 0, interrupts: 0 } });
+  }>({ utterBuf: [], utterLen: 0, playhead: 0, sources: [], micLevel: 0, lastMouth: null, utterance: "", dbg: { msgs: 0, audioParts: 0, schedSec: 0, interrupts: 0 } });
 
   useEffect(() => () => void stop(), []);
 
@@ -115,6 +129,31 @@ export default function FoxLiveCall({
     const id = setInterval(() => setTipIdx((i) => i + 1), 1600);
     return () => clearInterval(id);
   }, [phase]);
+
+  // Attach the neural WebRTC stream once its <video> exists.
+  useEffect(() => {
+    const v = neuralVideoRef.current;
+    const sess = s.current.neuralSess;
+    if (!neuralOn || !v || !sess) return;
+    v.srcObject = sess.stream;
+    v.muted = false;
+    v.play().catch(() => {
+      const unlock = () => {
+        v.play().catch(() => {});
+        document.removeEventListener("click", unlock);
+      };
+      document.addEventListener("click", unlock);
+    });
+    const sync = () => {
+      if (v.videoWidth && v.videoHeight) setNeuralAspect(`${v.videoWidth} / ${v.videoHeight}`);
+    };
+    v.addEventListener("loadedmetadata", sync);
+    v.addEventListener("resize", sync);
+    return () => {
+      v.removeEventListener("loadedmetadata", sync);
+      v.removeEventListener("resize", sync);
+    };
+  }, [neuralOn]);
 
   // Speaking state for the frame glow — polled, not per-frame React churn.
   useEffect(() => {
@@ -135,6 +174,21 @@ export default function FoxLiveCall({
     if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
   }
 
+  /** Neural mode: concatenate buffered PCM and ship it to the GPU server. */
+  function flushUtterance() {
+    const st = s.current;
+    if (!st.neuralSess || st.utterLen === 0) return;
+    const all = new Int16Array(st.utterLen);
+    let o = 0;
+    for (const c of st.utterBuf) {
+      all.set(c, o);
+      o += c.length;
+    }
+    st.utterBuf = [];
+    st.utterLen = 0;
+    void st.neuralSess.speak(all, 24000);
+  }
+
   function sendText(text: string) {
     send({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: true } });
   }
@@ -146,6 +200,20 @@ export default function FoxLiveCall({
     try {
       setPhase("connecting");
       setStatus("Waking up the fox…");
+
+      // Neural mode: connect to the GPU lip-sync server first so its stream
+      // is ready when speech starts. Failure falls back to the local avatar.
+      if (neural) {
+        try {
+          setStatus("Connecting to the GPU face…");
+          const sess = await connectNeuralAvatar();
+          st.neuralSess = sess;
+          setNeuralOn(true);
+        } catch (e) {
+          console.warn("neural connect failed:", e);
+          setStatus("GPU face offline — using the local avatar this call.");
+        }
+      }
 
       // Single-use ephemeral token — the real key stays on the server.
       const resp = await fetch("/api/fox-token", { method: "POST" });
@@ -233,6 +301,9 @@ export default function FoxLiveCall({
           st.sources = [];
           st.playhead = 0;
           st.utterance = "";
+          st.utterBuf = [];
+          st.utterLen = 0;
+          void st.neuralSess?.interrupt();
           return;
         }
 
@@ -240,7 +311,10 @@ export default function FoxLiveCall({
           st.utterance += sc.outputTranscription.text;
           setCaption(st.utterance);
         }
-        if (sc.turnComplete) st.utterance = "";
+        if (sc.turnComplete) {
+          st.utterance = "";
+          flushUtterance(); // neural mode: ship the finished utterance's tail
+        }
 
         for (const p of sc.modelTurn?.parts || []) {
           const b64 = p.inlineData?.data;
@@ -249,6 +323,16 @@ export default function FoxLiveCall({
           const pcm = new Int16Array(bin.length / 2);
           for (let i = 0; i < pcm.length; i++) {
             pcm[i] = (bin.charCodeAt(2 * i + 1) << 8) | bin.charCodeAt(2 * i);
+          }
+          st.dbg.audioParts++;
+          st.dbg.schedSec += pcm.length / 24000;
+          // Neural mode: don't play locally — buffer and ship to the GPU,
+          // whose WebRTC stream carries voice and lips already in sync.
+          if (st.neuralSess) {
+            st.utterBuf.push(pcm);
+            st.utterLen += pcm.length;
+            if (st.utterLen >= 24000 * 2) flushUtterance(); // ~2s chunks
+            continue;
           }
           // 24k mono PCM → AudioBuffer (the context resamples on playback).
           const buf = ctx.createBuffer(1, pcm.length, 24000);
@@ -264,8 +348,6 @@ export default function FoxLiveCall({
           src.onended = () => {
             st.sources = st.sources.filter((x) => x !== src);
           };
-          st.dbg.audioParts++;
-          st.dbg.schedSec += buf.duration;
         }
       };
 
@@ -366,6 +448,11 @@ export default function FoxLiveCall({
     const ws = st.ws;
     st.ws = undefined; // mark as intentional teardown before closing
     try { ws?.close(); } catch {}
+    try { st.neuralSess?.close(); } catch {}
+    st.neuralSess = undefined;
+    st.utterBuf = [];
+    st.utterLen = 0;
+    setNeuralOn(false);
     st.sources.forEach((src) => { try { src.stop(); } catch {} });
     st.sources = [];
     try { st.micStream?.getTracks().forEach((t) => t.stop()); } catch {}
@@ -409,13 +496,15 @@ export default function FoxLiveCall({
       <div
         style={{
           maxHeight: compact ? "calc(78dvh - 190px)" : "70dvh",
-          aspectRatio: avatar ? `${avatar.w} / ${avatar.h}` : "480 / 560",
+          aspectRatio: neuralOn ? neuralAspect : avatar ? `${avatar.w} / ${avatar.h}` : "480 / 560",
         }}
         className={`fox-live-frame relative mx-auto w-full overflow-hidden bg-neutral-900 shadow-2xl ${
           speakingUi ? "is-speaking" : ""
         } ${compact ? "max-w-[260px] rounded-xl" : "max-w-[420px] rounded-2xl"}`}
       >
-        {avatar?.mode === "video" ? (
+        {neuralOn ? (
+          <video ref={neuralVideoRef} autoPlay playsInline className="h-full w-full object-cover" />
+        ) : avatar?.mode === "video" ? (
           <VideoAvatar key={avatar.videoUrl} config={avatar} sample={sampleFox} className="h-full w-full" />
         ) : avatar ? (
           <PhotoAvatar key={avatar.createdAt} config={avatar} sample={sampleFox} className="h-full w-full" />

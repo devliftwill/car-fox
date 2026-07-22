@@ -180,6 +180,7 @@ export default function AvatarStudio() {
   const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null);
   const [videoErr, setVideoErr] = useState<string | null>(null);
   const [hasSaved, setHasSaved] = useState(false);
+  const [neuralMode, setNeuralMode] = useState(false);
   const boxRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<keyof Pins | null>(null);
   const origSrcRef = useRef<Blob | string | null>(null); // full-res source for quality crops
@@ -500,21 +501,33 @@ export default function AvatarStudio() {
         </div>
       </div>
 
-      {/* live test-drive — the ONLY place a custom avatar takes calls */}
-      {(videoDraft?.cfg ?? cfg) && (
-        <section className="mt-16 border-t border-neutral-200 pt-10">
-          <p className="sq-kicker text-neutral-400">Test drive</p>
-          <h2 className="text-xl font-light tracking-tight">Live call with this avatar</h2>
-          <p className="mb-6 mt-1 max-w-xl text-[13.5px] text-neutral-500">
-            Same Gemini brain and voice as the Car Fox — rendered with your face, only on this
-            page.
-          </p>
+      {/* live test-drive — the ONLY place custom/neural avatars take calls */}
+      <section className="mt-16 border-t border-neutral-200 pt-10">
+        <p className="sq-kicker text-neutral-400">Test drive</p>
+        <h2 className="text-xl font-light tracking-tight">Live call with this avatar</h2>
+        <p className="mb-4 mt-1 max-w-xl text-[13.5px] text-neutral-500">
+          Same Gemini brain and voice as the Car Fox — your uploaded face, the neural GPU face,
+          or the fox if neither is loaded. Only on this page.
+        </p>
+          <label className="mb-6 flex max-w-xl items-start gap-2.5 text-[13.5px] text-neutral-600">
+            <input
+              type="checkbox"
+              checked={neuralMode}
+              onChange={(e) => setNeuralMode(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <b>Neural GPU mouth</b> — render on our self-hosted lip-sync server (photoreal,
+              needs the fox-neural-mouth VM running). Voice and lips arrive already synced;
+              falls back to the local avatar if the server is offline.
+            </span>
+          </label>
           <FoxLiveCall
-            key={videoDraft ? videoDraft.cfg.videoUrl : img?.dataUrl.length}
+            key={(videoDraft ? videoDraft.cfg.videoUrl : img?.dataUrl.length) + ":" + neuralMode}
             avatar={videoDraft?.cfg ?? cfg ?? undefined}
+            neural={neuralMode}
           />
-        </section>
-      )}
+      </section>
     </main>
   );
 }
