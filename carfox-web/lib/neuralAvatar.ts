@@ -75,7 +75,7 @@ export async function connectNeuralAvatar(avatarId?: string): Promise<NeuralSess
     body: JSON.stringify({
       sdp: pc.localDescription!.sdp,
       type: pc.localDescription!.type,
-      ...(avatarId ? { avatar_id: avatarId } : {}),
+      ...(avatarId ? { avatar: avatarId } : {}), // LiveTalking's offer key is `avatar`
     }),
   });
   if (!r.ok) {
