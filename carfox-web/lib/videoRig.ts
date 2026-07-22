@@ -35,6 +35,17 @@ export async function analyzeVideo(
     video.onloadedmetadata = () => res();
     video.onerror = () => rej(new Error("Could not load that video."));
   });
+  // MediaRecorder webm quirk: duration reads Infinity until you seek far past
+  // the end once — required for the in-lab webcam recordings.
+  if (!isFinite(video.duration)) {
+    await new Promise<void>((res) => {
+      video.onseeked = () => res();
+      video.currentTime = 1e9;
+      setTimeout(res, 3000);
+    });
+    video.currentTime = 0;
+    await new Promise((r) => setTimeout(r, 100));
+  }
   const duration = Math.min(video.duration || 0, MAX_SECONDS);
   if (!duration || !video.videoWidth) return null;
 

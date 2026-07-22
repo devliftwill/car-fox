@@ -181,6 +181,11 @@ export default function AvatarStudio() {
   const [videoErr, setVideoErr] = useState<string | null>(null);
   const [hasSaved, setHasSaved] = useState(false);
   const [neuralMode, setNeuralMode] = useState(false);
+  // In-lab webcam recorder (video only, never uploaded anywhere)
+  const [recOn, setRecOn] = useState(false);
+  const [recSecs, setRecSecs] = useState<number | null>(null);
+  const recVideoRef = useRef<HTMLVideoElement | null>(null);
+  const recRef = useRef<{ stream?: MediaStream; rec?: MediaRecorder; chunks: Blob[]; timer?: ReturnType<typeof setInterval> }>({ chunks: [] });
   const boxRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<keyof Pins | null>(null);
   const origSrcRef = useRef<Blob | string | null>(null); // full-res source for quality crops
@@ -321,6 +326,80 @@ export default function AvatarStudio() {
     e.target.value = "";
   }
 
+  // ---- webcam recorder ----
+  async function openRecorder() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      recRef.current.stream = stream;
+      setRecOn(true);
+    } catch {
+      setVideoErr("Camera unavailable — check permissions, or upload a clip instead.");
+    }
+  }
+
+  function closeRecorder() {
+    const r = recRef.current;
+    if (r.timer) clearInterval(r.timer);
+    if (r.rec && r.rec.state === "recording") {
+      r.rec.onstop = null;
+      try { r.rec.stop(); } catch {}
+    }
+    r.stream?.getTracks().forEach((t) => t.stop());
+    recRef.current = { chunks: [] };
+    setRecOn(false);
+    setRecSecs(null);
+  }
+
+  function beginRecording() {
+    const r = recRef.current;
+    if (!r.stream) return;
+    const mime = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"].find(
+      (m) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m)
+    );
+    const rec = new MediaRecorder(r.stream, mime ? { mimeType: mime } : undefined);
+    r.rec = rec;
+    r.chunks = [];
+    rec.ondataavailable = (e) => e.data.size && r.chunks.push(e.data);
+    rec.onstop = () => {
+      const blob = new Blob(r.chunks, { type: rec.mimeType || "video/webm" });
+      closeRecorder();
+      if (blob.size > 5000) void loadFromVideo(blob);
+    };
+    rec.start();
+    let left = 8;
+    setRecSecs(left);
+    r.timer = setInterval(() => {
+      left -= 1;
+      setRecSecs(left);
+      if (left <= 0) {
+        if (r.timer) clearInterval(r.timer);
+        if (rec.state === "recording") rec.stop();
+      }
+    }, 1000);
+  }
+
+  function stopRecordingEarly() {
+    const r = recRef.current;
+    if (r.timer) clearInterval(r.timer);
+    if (r.rec?.state === "recording") r.rec.stop();
+  }
+
+  // attach the live camera preview once the panel exists
+  useEffect(() => {
+    const v = recVideoRef.current;
+    const stream = recRef.current.stream;
+    if (!recOn || !v || !stream) return;
+    v.srcObject = stream;
+    v.muted = true;
+    v.play().catch(() => {});
+    return () => {
+      v.srcObject = null;
+    };
+  }, [recOn]);
+
   function onPointerDown(k: keyof Pins) {
     return (e: React.PointerEvent) => {
       dragging.current = k;
@@ -426,22 +505,61 @@ export default function AvatarStudio() {
             </div>
           ) : (
             <div className="w-full space-y-3">
-              <label
-                className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-neutral-300 bg-neutral-50 p-12 text-center hover:border-neutral-500"
-                style={{ aspectRatio: "4 / 5" }}
-              >
-                <span className="text-4xl">🎬</span>
-                <span className="text-[15px] font-medium">
-                  {analyzing
-                    ? `Tracking your face… ${analyzing.done}/${analyzing.total}`
-                    : "Choose a short video or a photo"}
-                </span>
-                <span className="text-[12.5px] text-neutral-500">
-                  Best: a 5–10s front-facing clip where you sit still, blink, and breathe — the
-                  avatar inherits its life from your footage. A photo works too.
-                </span>
-                <input type="file" accept="image/*,video/*" className="hidden" onChange={onFile} disabled={!!analyzing} />
-              </label>
+              {recOn ? (
+                <div
+                  className="relative w-full overflow-hidden rounded-2xl bg-neutral-900 shadow-2xl"
+                  style={{ aspectRatio: "4 / 5" }}
+                >
+                  <video ref={recVideoRef} autoPlay playsInline muted className="h-full w-full object-cover -scale-x-100" />
+                  {recSecs !== null && (
+                    <div className="absolute left-3 top-3 rounded-md bg-red-600 px-2.5 py-1 text-[13px] font-bold text-white">
+                      ● {recSecs}s
+                    </div>
+                  )}
+                  <div className="absolute inset-x-0 bottom-0 flex justify-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-4">
+                    {recSecs === null ? (
+                      <>
+                        <button onClick={beginRecording} className="sq-btn sq-btn--white">
+                          ● Record 8s
+                        </button>
+                        <button onClick={closeRecorder} className="sq-btn sq-btn--ghost">
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button onClick={stopRecordingEarly} className="sq-btn sq-btn--white">
+                        ■ Stop
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <label
+                  className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-neutral-300 bg-neutral-50 p-12 text-center hover:border-neutral-500"
+                  style={{ aspectRatio: "4 / 5" }}
+                >
+                  <span className="text-4xl">🎬</span>
+                  <span className="text-[15px] font-medium">
+                    {analyzing
+                      ? `Tracking your face… ${analyzing.done}/${analyzing.total}`
+                      : "Choose a short video or a photo"}
+                  </span>
+                  <span className="text-[12.5px] text-neutral-500">
+                    Best: a 5–10s front-facing clip where you sit still, blink, and breathe — the
+                    avatar inherits its life from your footage. A photo works too.
+                  </span>
+                  <input type="file" accept="image/*,video/*" className="hidden" onChange={onFile} disabled={!!analyzing} />
+                </label>
+              )}
+              {!recOn && (
+                <button
+                  onClick={openRecorder}
+                  disabled={!!analyzing}
+                  className="sq-btn w-full border border-neutral-300 text-neutral-600 hover:border-neutral-900 hover:text-neutral-900"
+                >
+                  🎥 Record a short clip with your camera
+                </button>
+              )}
               {videoErr && <p className="text-[13px] text-red-600">{videoErr}</p>}
               <button
                 onClick={async () => {
