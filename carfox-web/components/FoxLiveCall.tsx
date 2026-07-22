@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCar, money, km, type Car } from "@/lib/cars";
 import { FoxLipsync, type FoxMouthParams } from "@/lib/foxLipsync";
-import { loadAvatar, AVATAR_EVENT, type AvatarConfig } from "@/lib/avatarStore";
+import type { AvatarConfig } from "@/lib/avatarStore";
 import FoxAvatar, { type FoxSample } from "./FoxAvatar";
 import PhotoAvatar from "./PhotoAvatar";
 
@@ -54,10 +54,17 @@ export default function FoxLiveCall({
   vehicleSlug,
   compact = false,
   autoStart = false,
+  avatar,
 }: {
   vehicleSlug?: string;
   compact?: boolean;
   autoStart?: boolean;
+  /**
+   * Sandbox-only: render this photo avatar instead of the fox. The site-wide
+   * dock NEVER passes this — the production fox is not affected by anything
+   * saved in the Avatar Lab.
+   */
+  avatar?: AvatarConfig;
 }) {
   const car = vehicleSlug ? getCar(vehicleSlug) : undefined;
   const carRef = useRef(car);
@@ -66,7 +73,6 @@ export default function FoxLiveCall({
   });
 
   const [phase, setPhase] = useState<Phase>("idle");
-  const [avatar, setAvatar] = useState<AvatarConfig | null>(null);
   const [status, setStatus] = useState("Ready when you are.");
   const [muted, setMuted] = useState(false);
   const [micOk, setMicOk] = useState(true);
@@ -93,15 +99,6 @@ export default function FoxLiveCall({
   }>({ playhead: 0, sources: [], micLevel: 0, lastMouth: null, utterance: "", dbg: { msgs: 0, audioParts: 0, schedSec: 0, interrupts: 0 } });
 
   useEffect(() => () => void stop(), []);
-
-  // A saved photo avatar (Avatar Studio) takes over the fox's face — same
-  // voice, same lipsync params, different renderer.
-  useEffect(() => {
-    const sync = () => setAvatar(loadAvatar());
-    sync();
-    window.addEventListener(AVATAR_EVENT, sync);
-    return () => window.removeEventListener(AVATAR_EVENT, sync);
-  }, []);
 
   // StrictMode-safe autostart: the dev double-mount cancels the first timer,
   // so exactly one start() fires.

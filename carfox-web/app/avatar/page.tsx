@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import PhotoAvatar from "@/components/PhotoAvatar";
+import FoxLiveCall from "@/components/FoxLiveCall";
 import type { FoxSample } from "@/components/FoxAvatar";
 import {
   AVATAR_EVENT,
@@ -222,23 +223,30 @@ export default function AvatarStudio() {
     const stamped = { ...cfg, createdAt: Date.now() };
     saveAvatar(stamped);
     setSavedAt(stamped.createdAt);
-    // The dock lives on every page — open it right here with the new face.
-    window.dispatchEvent(new Event("carfox:open"));
   }
 
-  function resetToFox() {
+  function discardSaved() {
     clearAvatar();
     setSavedAt(null);
   }
 
+  function loadSaved() {
+    const saved = loadAvatar();
+    if (!saved) return;
+    setImg({ dataUrl: saved.image, w: saved.w, h: saved.h });
+    setPins(rigToPins(saved.rig, saved.w, saved.h));
+    setSavedAt(saved.createdAt);
+    setDetect("found");
+  }
+
   return (
     <main className="mx-auto max-w-5xl px-6 py-16">
-      <p className="sq-kicker text-neutral-400">Make it yours</p>
-      <h1 className="text-3xl font-light tracking-tight">Avatar Studio</h1>
+      <p className="sq-kicker text-neutral-400">Sandbox — experimental</p>
+      <h1 className="text-3xl font-light tracking-tight">Avatar Lab</h1>
       <p className="mt-2 max-w-xl text-[14px] leading-relaxed text-neutral-500">
-        Upload a photo and it becomes the live talking face on your Car Fox calls — same voice,
-        same brain, your face (or your dog&apos;s). Everything stays in your browser; the photo is
-        never uploaded to a server.
+        A sandbox for photo-driven avatars: upload a photo, rig it, and test-drive it on a live
+        call — <b>right here only</b>. The Car Fox in the site&apos;s corner dock is not affected
+        by anything in this lab. Photos stay in your browser; nothing is uploaded to a server.
       </p>
 
       <div className="mt-10 flex flex-col items-start gap-10 md:flex-row">
@@ -266,17 +274,24 @@ export default function AvatarStudio() {
                 ))}
             </div>
           ) : (
-            <label
-              className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-neutral-300 bg-neutral-50 p-12 text-center hover:border-neutral-500"
-              style={{ aspectRatio: "4 / 5" }}
-            >
-              <span className="text-4xl">📷</span>
-              <span className="text-[15px] font-medium">Choose a photo</span>
-              <span className="text-[12.5px] text-neutral-500">
-                A clear, front-facing head &amp; shoulders shot works best
-              </span>
-              <input type="file" accept="image/*" className="hidden" onChange={onFile} />
-            </label>
+            <div className="w-full space-y-3">
+              <label
+                className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-neutral-300 bg-neutral-50 p-12 text-center hover:border-neutral-500"
+                style={{ aspectRatio: "4 / 5" }}
+              >
+                <span className="text-4xl">📷</span>
+                <span className="text-[15px] font-medium">Choose a photo</span>
+                <span className="text-[12.5px] text-neutral-500">
+                  A clear, front-facing head &amp; shoulders shot works best
+                </span>
+                <input type="file" accept="image/*" className="hidden" onChange={onFile} />
+              </label>
+              {hasSaved && (
+                <button onClick={loadSaved} className="sq-btn w-full border border-neutral-300 text-neutral-600 hover:border-neutral-900 hover:text-neutral-900">
+                  Load my saved avatar
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -301,21 +316,34 @@ export default function AvatarStudio() {
                 </label>
               </div>
               <button onClick={save} className="sq-btn sq-btn--black w-full">
-                {savedAt ? "Saved ✓ — talk to it in the corner" : "Save & talk to it now"}
+                {savedAt ? "Saved ✓ (this lab only)" : "Save in this lab"}
               </button>
             </>
           )}
           {hasSaved && (
-            <button onClick={resetToFox} className="sq-btn w-full border border-neutral-300 text-neutral-500 hover:border-neutral-900 hover:text-neutral-900">
-              Remove my photo — back to the fox
+            <button onClick={discardSaved} className="sq-btn w-full border border-neutral-300 text-neutral-500 hover:border-neutral-900 hover:text-neutral-900">
+              Delete saved avatar
             </button>
           )}
           <p className="text-[12px] leading-relaxed text-neutral-400">
-            The saved face takes over the Car Fox dock on every page. Face detection runs locally
-            (MediaPipe wasm) — works offline, nothing leaves this device.
+            Face detection runs locally (MediaPipe wasm) — works offline, nothing leaves this
+            device. Saved avatars live in this lab only; the corner-dock fox is untouched.
           </p>
         </div>
       </div>
+
+      {/* live test-drive — the ONLY place a photo avatar takes calls */}
+      {cfg && (
+        <section className="mt-16 border-t border-neutral-200 pt-10">
+          <p className="sq-kicker text-neutral-400">Test drive</p>
+          <h2 className="text-xl font-light tracking-tight">Live call with this avatar</h2>
+          <p className="mb-6 mt-1 max-w-xl text-[13.5px] text-neutral-500">
+            Same Gemini brain and voice as the Car Fox — rendered with your photo, only on this
+            page.
+          </p>
+          <FoxLiveCall key={img?.dataUrl.length} avatar={cfg} />
+        </section>
+      )}
     </main>
   );
 }
