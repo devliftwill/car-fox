@@ -82,11 +82,19 @@ export default function AvatarLab() {
       const taskId = j?.data?.task_id;
       if (!r.ok || !taskId) throw new Error(j?.msg || j?.error || "GPU server unreachable — is the VM running?");
       setGpuGen({ taskId, progress: 5, status: "queued" });
+      let missing = 0;
+      const deadline = Date.now() + 8 * 60 * 1000;
       for (;;) {
         await new Promise((res) => setTimeout(res, 4000));
+        if (Date.now() > deadline) throw new Error("generation took too long — the GPU may be overloaded; try again");
         const s = await fetch(`/api/neural/avatar?task=${taskId}`).then((x) => x.json()).catch(() => null);
         const d = s?.data;
-        if (!d) continue;
+        if (!d) {
+          // Task unknown = the studio restarted mid-generation; don't spin forever.
+          if (++missing >= 4) throw new Error("the studio restarted mid-generation — please record again");
+          continue;
+        }
+        missing = 0;
         setGpuGen({ taskId, progress: Math.max(5, d.progress ?? 0), status: d.status ?? "running" });
         if (d.status === "completed") {
           localStorage.setItem("carfox.gpuAvatarId", avatarId);
