@@ -58,9 +58,20 @@ export default function FoxWidget() {
             <b>
               Car Fox <span style={{ color: "var(--fox)" }}>Live</span>
             </b>
-            <button onClick={() => setOpen(false)} aria-label="End call and close">
-              ✕
-            </button>
+            <span className="flex items-center gap-1">
+              <a
+                href="/avatar"
+                title="Make your own talking avatar from a photo"
+                aria-label="Create a custom avatar from a photo"
+                onClick={() => setOpen(false)}
+                style={{ fontSize: 14, textDecoration: "none", padding: "2px 6px" }}
+              >
+                📷
+              </a>
+              <button onClick={() => setOpen(false)} aria-label="End call and close">
+                ✕
+              </button>
+            </span>
           </div>
           <div className="fox-dock-body">
             <FoxLiveCall key={pathname} vehicleSlug={vehicleSlug} compact autoStart />

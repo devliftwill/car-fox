@@ -14,7 +14,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCar, money, km, type Car } from "@/lib/cars";
 import { FoxLipsync, type FoxMouthParams } from "@/lib/foxLipsync";
+import { loadAvatar, AVATAR_EVENT, type AvatarConfig } from "@/lib/avatarStore";
 import FoxAvatar, { type FoxSample } from "./FoxAvatar";
+import PhotoAvatar from "./PhotoAvatar";
 
 const GEMINI_MODEL = "models/gemini-3.1-flash-live-preview";
 const WS_URL =
@@ -64,6 +66,7 @@ export default function FoxLiveCall({
   });
 
   const [phase, setPhase] = useState<Phase>("idle");
+  const [avatar, setAvatar] = useState<AvatarConfig | null>(null);
   const [status, setStatus] = useState("Ready when you are.");
   const [muted, setMuted] = useState(false);
   const [micOk, setMicOk] = useState(true);
@@ -90,6 +93,15 @@ export default function FoxLiveCall({
   }>({ playhead: 0, sources: [], micLevel: 0, lastMouth: null, utterance: "", dbg: { msgs: 0, audioParts: 0, schedSec: 0, interrupts: 0 } });
 
   useEffect(() => () => void stop(), []);
+
+  // A saved photo avatar (Avatar Studio) takes over the fox's face — same
+  // voice, same lipsync params, different renderer.
+  useEffect(() => {
+    const sync = () => setAvatar(loadAvatar());
+    sync();
+    window.addEventListener(AVATAR_EVENT, sync);
+    return () => window.removeEventListener(AVATAR_EVENT, sync);
+  }, []);
 
   // StrictMode-safe autostart: the dev double-mount cancels the first timer,
   // so exactly one start() fires.
@@ -397,12 +409,19 @@ export default function FoxLiveCall({
   return (
     <div className={compact ? "px-4 pb-4 pt-3 text-center" : "mx-auto max-w-3xl px-6 text-center"}>
       <div
-        style={{ maxHeight: compact ? "calc(78dvh - 190px)" : "70dvh", aspectRatio: "480 / 560" }}
+        style={{
+          maxHeight: compact ? "calc(78dvh - 190px)" : "70dvh",
+          aspectRatio: avatar ? `${avatar.w} / ${avatar.h}` : "480 / 560",
+        }}
         className={`fox-live-frame relative mx-auto w-full overflow-hidden bg-neutral-900 shadow-2xl ${
           speakingUi ? "is-speaking" : ""
         } ${compact ? "max-w-[260px] rounded-xl" : "max-w-[420px] rounded-2xl"}`}
       >
-        <FoxAvatar sample={sampleFox} className="h-full w-full" />
+        {avatar ? (
+          <PhotoAvatar key={avatar.createdAt} config={avatar} sample={sampleFox} className="h-full w-full" />
+        ) : (
+          <FoxAvatar sample={sampleFox} className="h-full w-full" />
+        )}
         {caption && phase === "live" && (
           <div className="fox-caption">
             <span>{caption}</span>

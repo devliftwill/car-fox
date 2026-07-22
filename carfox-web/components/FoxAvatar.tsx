@@ -17,31 +17,9 @@
  */
 import { useEffect, useRef } from "react";
 import type { FoxMouthParams } from "@/lib/foxLipsync";
+import { mouthGeometry } from "@/lib/foxMouth";
 
 export type FoxSample = { mouth: FoxMouthParams | null; micLevel?: number };
-
-/** Mouth cavity path from open/round, in the mouth group's local coords. */
-function mouthGeometry(open: number, round: number) {
-  const hw = 14 + 44 * (1 - 0.52 * round) + 6 * open * (1 - round);
-  const cornerY = -6 * (1 - open * 0.5);
-  const topY = -4 - 3 * open;
-  const botY = 6 + 52 * open * (1 + 0.1 * round);
-  const cavity =
-    `M ${-hw} ${cornerY}` +
-    ` C ${-hw * 0.5} ${topY - 4}, ${hw * 0.5} ${topY - 4}, ${hw} ${cornerY}` +
-    ` C ${hw * 0.85} ${botY * 0.85}, ${hw * 0.3} ${botY}, 0 ${botY}` +
-    ` C ${-hw * 0.3} ${botY}, ${-hw * 0.85} ${botY * 0.85}, ${-hw} ${cornerY} Z`;
-  const lip =
-    `M ${-hw} ${cornerY}` +
-    ` C ${-hw * 0.5} ${4 + open * 2}, ${hw * 0.5} ${4 + open * 2}, ${hw} ${cornerY}`;
-  const teethTop = 0.75 * (topY - 4) + 0.25 * cornerY + 2;
-  const teethH = Math.max(5, 9 + 6 * open - 11 * round * open);
-  const tw = hw * 0.92;
-  const teeth =
-    `M ${-tw} ${teethTop} L ${tw} ${teethTop} L ${tw} ${teethTop + teethH}` +
-    ` Q 0 ${teethTop + teethH + 4}, ${-tw} ${teethTop + teethH} Z`;
-  return { cavity, lip, teeth, hw, botY };
-}
 
 export default function FoxAvatar({
   sample,
