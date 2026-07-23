@@ -14,7 +14,7 @@ import crypto from "node:crypto";
  */
 const NEURAL = (process.env.FOX_NEURAL_URL ?? "http://136.113.13.127:8010").replace(/\/$/, "");
 const PROJECT = "otava-469016";
-const ZONE = "us-central1-a";
+const ZONE = process.env.FOX_NEURAL_ZONE ?? "us-central1-a";
 const INSTANCE = "fox-neural-mouth";
 
 const b64url = (input: Buffer | string) =>
