@@ -301,13 +301,25 @@ export default function FoxLiveCall({
         if (msg.setupComplete) {
           await startMic(); // continues gracefully without a mic
           setPhase("live");
-          setStatus("Live — just talk. Interrupt him any time. 🦊");
           const c = carRef.current;
-          sendText(
-            c
-              ? `Greet me in one short energetic sentence and offer to talk about the ${c.year} ${c.make} ${c.model} I'm looking at.`
-              : "Greet me in one short energetic sentence and ask what kind of car I'm hunting for."
-          );
+          const greet = () =>
+            sendText(
+              c
+                ? `Greet me in one short energetic sentence and offer to talk about the ${c.year} ${c.make} ${c.model} I'm looking at.`
+                : "Greet me in one short energetic sentence and ask what kind of car I'm hunting for."
+            );
+          if (neural && neuralEngine === "ditto" && s.current.neuralSess) {
+            // The character pipeline needs ~10s of priming before it can move
+            // lips; greeting during that window would play over a still face.
+            setStatus("The fox is waking up… one moment. 🦊");
+            setTimeout(() => {
+              setStatus("Live — just talk. Interrupt him any time. 🦊");
+              greet();
+            }, 12000);
+          } else {
+            setStatus("Live — just talk. Interrupt him any time. 🦊");
+            greet();
+          }
           return;
         }
         if (msg.goAway) {
