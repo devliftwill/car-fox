@@ -29,13 +29,15 @@ export default function AvatarLab() {
   const clipVideoRef = useRef<HTMLVideoElement | null>(null);
   const recRef = useRef<{ stream?: MediaStream; rec?: MediaRecorder; chunks: Blob[]; timer?: ReturnType<typeof setInterval> }>({ chunks: [] });
 
-  const [library, setLibrary] = useState<{ avatar_id: string; created: number }[]>([]);
+  const [library, setLibrary] = useState<{ avatar_id: string; created: number; engine?: string }[]>([]);
+  const [gpuEngine, setGpuEngine] = useState<string>("muse");
   // Self-waking studio: the page wakes the GPU VM and waits until it answers.
   const [studio, setStudio] = useState<"checking" | "waking" | "ready" | "error">("checking");
 
   useEffect(() => {
     const id = localStorage.getItem("carfox.gpuAvatarId");
-    if (id) Promise.resolve().then(() => setGpuAvatarId(id));
+    const eng = localStorage.getItem("carfox.gpuAvatarEngine") ?? "muse";
+    if (id) Promise.resolve().then(() => { setGpuAvatarId(id); setGpuEngine(eng); });
   }, []);
 
   useEffect(() => {
@@ -65,9 +67,29 @@ export default function AvatarLab() {
     };
   }, []);
 
-  function pickAvatar(id: string) {
+  function pickAvatar(id: string, engine = "muse") {
     localStorage.setItem("carfox.gpuAvatarId", id);
+    localStorage.setItem("carfox.gpuAvatarEngine", engine);
     setGpuAvatarId(id);
+    setGpuEngine(engine);
+  }
+
+  /** Characters: one photo in, ditto avatar out — no GPU generation wait. */
+  async function uploadCharacter(file: File) {
+    setErr(null);
+    const avatarId = "chr_" + Date.now().toString(36);
+    const fd = new FormData();
+    fd.append("avatar_id", avatarId);
+    fd.append("photo", file, file.name || "source.png");
+    try {
+      const r = await fetch("/api/neural/avatar", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok || j?.code !== 0) throw new Error(j?.msg || j?.error || "photo upload failed");
+      setLibrary((l) => [{ avatar_id: avatarId, created: Date.now() / 1000, engine: "ditto" }, ...l]);
+      pickAvatar(avatarId, "ditto");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
   }
 
   /** Ship a clip to the GPU; it becomes the MuseTalk avatar for calls here. */
@@ -306,13 +328,13 @@ export default function AvatarLab() {
                 {library.map((a) => (
                   <button
                     key={a.avatar_id}
-                    onClick={() => pickAvatar(a.avatar_id)}
+                    onClick={() => pickAvatar(a.avatar_id, a.engine ?? "muse")}
                     className="group w-[124px] overflow-hidden rounded-xl border border-neutral-200 text-left shadow-sm hover:border-neutral-900 hover:shadow-md"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={`/api/neural/avatar?thumb=${encodeURIComponent(a.avatar_id)}`} alt="" className="aspect-square w-full bg-neutral-100 object-cover" />
                     <span className="block truncate px-2 py-1.5 text-[11px] text-neutral-500 group-hover:text-neutral-900">
-                      {a.avatar_id}
+                      {a.engine === "ditto" ? "🦊 " : ""}{a.avatar_id}
                     </span>
                   </button>
                 ))}
@@ -350,6 +372,23 @@ export default function AvatarLab() {
                 📁 …or upload a short clip
                 <input type="file" accept="video/*" className="hidden" onChange={onFile} />
               </label>
+              <label className="sq-btn w-full cursor-pointer border border-neutral-300 py-4 text-center text-neutral-600 hover:border-neutral-900 hover:text-neutral-900">
+                🦊 …or upload a character photo
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void uploadCharacter(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <p className="text-center text-[12px] text-neutral-400">
+                Characters (mascots, cartoons, animals) need just one clear front-facing photo —
+                they&apos;re ready instantly.
+              </p>
               <p className="text-center text-[12px] text-neutral-400">
                 Face the camera, sit fairly still, mouth closed. Nothing is stored server-side
                 beyond the avatar frames on our own GPU box.
@@ -400,7 +439,7 @@ export default function AvatarLab() {
               {library.map((a) => (
                 <button
                   key={a.avatar_id}
-                  onClick={() => pickAvatar(a.avatar_id)}
+                  onClick={() => pickAvatar(a.avatar_id, a.engine ?? "muse")}
                   title={`switch to ${a.avatar_id}`}
                   className={`overflow-hidden rounded-full border-2 transition ${
                     a.avatar_id === gpuAvatarId
@@ -418,7 +457,7 @@ export default function AvatarLab() {
               ))}
             </div>
           )}
-          <FoxLiveCall key={gpuAvatarId} neural neuralAvatarId={gpuAvatarId} />
+          <FoxLiveCall key={`${gpuAvatarId}:${gpuEngine}`} neural neuralAvatarId={gpuAvatarId} neuralEngine={gpuEngine} />
         </section>
       )}
     </main>

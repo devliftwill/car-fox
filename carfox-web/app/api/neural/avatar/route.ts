@@ -13,7 +13,20 @@ export async function POST(req: NextRequest) {
   try {
     const inForm = await req.formData();
     const video = inForm.get("video");
+    const photo = inForm.get("photo");
     const avatarId = String(inForm.get("avatar_id") ?? "");
+    // Character path: a single photo becomes a ditto avatar instantly (no GPU task).
+    if (photo instanceof File && avatarId) {
+      const fd = new FormData();
+      fd.append("avatar_id", avatarId);
+      fd.append("photo", photo, photo.name || "source.png");
+      const r = await fetch(`${NEURAL}/api/avatar/photo`, {
+        method: "POST",
+        body: fd,
+        signal: AbortSignal.timeout(30000),
+      });
+      return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
+    }
     if (!(video instanceof File) || !avatarId) {
       return NextResponse.json({ error: "video file and avatar_id required" }, { status: 400 });
     }

@@ -2,11 +2,14 @@ import { NextResponse, type NextRequest } from "next/server";
 
 /** Relays an utterance WAV to the GPU server's /humanaudio (drives the lips). */
 const NEURAL = (process.env.FOX_NEURAL_URL ?? "http://136.113.13.127:8010").replace(/\/$/, "");
+const NEURAL_DITTO = (process.env.FOX_NEURAL_DITTO_URL ?? `${NEURAL}/ditto`).replace(/\/$/, "");
 
 export async function POST(req: NextRequest) {
   try {
-    const fd = await req.formData(); // { sessionid, file }
-    const r = await fetch(`${NEURAL}/humanaudio`, {
+    const fd = await req.formData(); // { sessionid, file, engine? }
+    const base = fd.get("engine") === "ditto" ? NEURAL_DITTO : NEURAL;
+    fd.delete("engine");
+    const r = await fetch(`${base}/humanaudio`, {
       method: "POST",
       body: fd,
       signal: AbortSignal.timeout(20000),

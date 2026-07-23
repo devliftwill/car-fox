@@ -59,6 +59,7 @@ export default function FoxLiveCall({
   avatar,
   neural = false,
   neuralAvatarId,
+  neuralEngine,
 }: {
   vehicleSlug?: string;
   compact?: boolean;
@@ -77,6 +78,8 @@ export default function FoxLiveCall({
   neural?: boolean;
   /** GPU-side avatar to use for this session (from the clip→GPU generator). */
   neuralAvatarId?: string;
+  /** which GPU engine drives the avatar: undefined/"muse" | "ditto" (characters) */
+  neuralEngine?: string;
 }) {
   const car = vehicleSlug ? getCar(vehicleSlug) : undefined;
   const carRef = useRef(car);
@@ -220,7 +223,7 @@ export default function FoxLiveCall({
       if (neural) {
         try {
           setStatus("Connecting to the GPU face…");
-          const sess = await connectNeuralAvatar(neuralAvatarId);
+          const sess = await connectNeuralAvatar(neuralAvatarId, neuralEngine);
           st.neuralSess = sess;
           setNeuralOn(true);
         } catch (e) {

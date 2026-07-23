@@ -44,7 +44,10 @@ export function pcmToWav(pcm: Int16Array, sampleRate: number): Blob {
   return new Blob([header, pcm.buffer as ArrayBuffer], { type: "audio/wav" });
 }
 
-export async function connectNeuralAvatar(avatarId?: string): Promise<NeuralSession> {
+export async function connectNeuralAvatar(
+  avatarId?: string,
+  engine?: string
+): Promise<NeuralSession> {
   const pc = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
@@ -76,6 +79,7 @@ export async function connectNeuralAvatar(avatarId?: string): Promise<NeuralSess
       sdp: pc.localDescription!.sdp,
       type: pc.localDescription!.type,
       ...(avatarId ? { avatar: avatarId } : {}), // LiveTalking's offer key is `avatar`
+      ...(engine ? { engine } : {}), // consumed by our relay to pick the GPU service
     }),
   });
   if (!r.ok) {
@@ -92,6 +96,7 @@ export async function connectNeuralAvatar(avatarId?: string): Promise<NeuralSess
     speak: async (pcm, sampleRate) => {
       const fd = new FormData();
       fd.append("sessionid", String(sessionid));
+      if (engine) fd.append("engine", engine);
       fd.append("file", pcmToWav(pcm, sampleRate), "utterance.wav");
       await fetch("/api/neural/audio", { method: "POST", body: fd });
     },
@@ -99,7 +104,7 @@ export async function connectNeuralAvatar(avatarId?: string): Promise<NeuralSess
       await fetch("/api/neural/interrupt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionid }),
+        body: JSON.stringify({ sessionid, ...(engine ? { engine } : {}) }),
       });
     },
     close: () => {
