@@ -139,19 +139,27 @@ export default function FoxLiveCall({
   }, [phase]);
 
   // Attach the neural WebRTC stream once its <video> exists.
-  // IMPORTANT: video and audio tracks go to SEPARATE elements — MuseTalk
-  // sends no audio frames during silence, and a media element with a starved
-  // audio track freezes its whole clock (video included, at ~3s, every time).
+  // MuseTalk: video and audio tracks go to SEPARATE elements — it sends no
+  // audio frames during silence, and a media element with a starved audio
+  // track freezes its whole clock (video included, at ~3s, every time).
+  // Ditto: audio is CONTINUOUS, so both tracks share ONE element — the
+  // browser then lip-syncs them itself; split elements drift apart.
   useEffect(() => {
     const v = neuralVideoRef.current;
     const a = neuralAudioRef.current;
     const sess = s.current.neuralSess;
     if (!neuralOn || !v || !sess) return;
-    v.srcObject = new MediaStream(sess.stream.getVideoTracks());
-    v.muted = true;
-    if (a) {
-      a.srcObject = new MediaStream(sess.stream.getAudioTracks());
-      a.play().catch(() => {});
+    if (neuralEngine === "ditto") {
+      v.srcObject = sess.stream;
+      v.muted = false;
+      if (a) a.srcObject = null;
+    } else {
+      v.srcObject = new MediaStream(sess.stream.getVideoTracks());
+      v.muted = true;
+      if (a) {
+        a.srcObject = new MediaStream(sess.stream.getAudioTracks());
+        a.play().catch(() => {});
+      }
     }
     v.play().catch(() => {
       const unlock = () => {
@@ -170,7 +178,7 @@ export default function FoxLiveCall({
       v.removeEventListener("loadedmetadata", sync);
       v.removeEventListener("resize", sync);
     };
-  }, [neuralOn]);
+  }, [neuralOn, neuralEngine]);
 
   // Speaking state for the frame glow — polled, not per-frame React churn.
   useEffect(() => {
