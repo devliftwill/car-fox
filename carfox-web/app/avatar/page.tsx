@@ -20,6 +20,8 @@ export default function AvatarLab() {
   const [gpuGen, setGpuGen] = useState<GpuGen | null>(null);
   const [gpuAvatarId, setGpuAvatarId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // library-first: returning users pick a saved avatar; recording is opt-in
+  const [wantNew, setWantNew] = useState(false);
   // webcam recorder
   const [recOn, setRecOn] = useState(false);
   const [recSecs, setRecSecs] = useState<number | null>(null);
@@ -294,10 +296,35 @@ export default function AvatarLab() {
         </section>
       )}
 
-      {/* Step 1 — get a clip */}
+      {/* Step 1 — pick a saved avatar, or get a clip */}
       {studio === "ready" && !gpuAvatarId && !busy && (
         <section className="mt-10">
-          {recOn ? (
+          {library.length > 0 && !wantNew && !recOn ? (
+            <div className="mx-auto w-full max-w-[460px]">
+              <p className="mb-4 text-center text-[14.5px] font-medium">Welcome back — pick your avatar:</p>
+              <div className="flex flex-wrap justify-center gap-3">
+                {library.map((a) => (
+                  <button
+                    key={a.avatar_id}
+                    onClick={() => pickAvatar(a.avatar_id)}
+                    className="group w-[124px] overflow-hidden rounded-xl border border-neutral-200 text-left shadow-sm hover:border-neutral-900 hover:shadow-md"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`/api/neural/avatar?thumb=${encodeURIComponent(a.avatar_id)}`} alt="" className="aspect-square w-full bg-neutral-100 object-cover" />
+                    <span className="block truncate px-2 py-1.5 text-[11px] text-neutral-500 group-hover:text-neutral-900">
+                      {a.avatar_id}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => setWantNew(true)}
+                className="sq-btn mt-6 w-full border border-neutral-300 text-neutral-600 hover:border-neutral-900 hover:text-neutral-900"
+              >
+                🎥 Record a new avatar instead
+              </button>
+            </div>
+          ) : recOn ? (
             <div className="relative mx-auto w-full max-w-[420px] overflow-hidden rounded-2xl bg-neutral-900 shadow-2xl" style={{ aspectRatio: "4 / 5" }}>
               <video ref={recVideoRef} autoPlay playsInline muted className="h-full w-full -scale-x-100 object-cover" />
               {recSecs !== null && (
@@ -328,22 +355,9 @@ export default function AvatarLab() {
                 beyond the avatar frames on our own GPU box.
               </p>
               {library.length > 0 && (
-                <div className="mt-4 border-t border-neutral-200 pt-4">
-                  <p className="mb-2 text-center text-[12px] uppercase tracking-[0.14em] text-neutral-400">
-                    Or reuse a saved avatar
-                  </p>
-                  <div className="flex flex-wrap justify-center gap-2">
-                    {library.map((a) => (
-                      <button
-                        key={a.avatar_id}
-                        onClick={() => pickAvatar(a.avatar_id)}
-                        className="sq-btn border border-neutral-300 text-[12px] text-neutral-600 hover:border-neutral-900 hover:text-neutral-900"
-                      >
-                        {a.avatar_id}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <button onClick={() => setWantNew(false)} className="text-[12.5px] text-neutral-500 underline hover:text-neutral-900">
+                  ← back to saved avatars
+                </button>
               )}
             </div>
           )}

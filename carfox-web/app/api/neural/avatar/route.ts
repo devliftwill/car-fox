@@ -36,6 +36,21 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const task = req.nextUrl.searchParams.get("task");
+  // ?thumb=<avatar_id> → small face preview JPEG
+  const thumb = req.nextUrl.searchParams.get("thumb");
+  if (thumb) {
+    try {
+      const r = await fetch(`${NEURAL}/api/avatar/thumb/${encodeURIComponent(thumb)}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) return new NextResponse(null, { status: r.status });
+      return new NextResponse(await r.arrayBuffer(), {
+        headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" },
+      });
+    } catch {
+      return new NextResponse(null, { status: 502 });
+    }
+  }
   // ?list=1 → the avatar library: durable on-disk avatars on the GPU box
   if (!task && req.nextUrl.searchParams.get("list")) {
     try {
