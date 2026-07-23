@@ -395,6 +395,29 @@ export default function AvatarLab() {
               record a new one
             </button>
           </div>
+          {library.length > 1 && (
+            <div className="mb-5 flex flex-wrap items-center justify-center gap-2">
+              {library.map((a) => (
+                <button
+                  key={a.avatar_id}
+                  onClick={() => pickAvatar(a.avatar_id)}
+                  title={`switch to ${a.avatar_id}`}
+                  className={`overflow-hidden rounded-full border-2 transition ${
+                    a.avatar_id === gpuAvatarId
+                      ? "border-neutral-900"
+                      : "border-transparent opacity-60 hover:opacity-100"
+                  }`}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`/api/neural/avatar?thumb=${encodeURIComponent(a.avatar_id)}`}
+                    alt=""
+                    className="h-12 w-12 bg-neutral-100 object-cover"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
           <FoxLiveCall key={gpuAvatarId} neural neuralAvatarId={gpuAvatarId} />
         </section>
       )}
