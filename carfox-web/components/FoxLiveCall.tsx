@@ -161,14 +161,24 @@ export default function FoxLiveCall({
         a.play().catch(() => {});
       }
     }
-    v.play().catch(() => {
-      const unlock = () => {
-        v.play().catch(() => {});
-        a?.play().catch(() => {});
-        document.removeEventListener("click", unlock);
-      };
-      document.addEventListener("click", unlock);
-    });
+    v.play()
+      .then(() => console.info("[fox] neural media playing, muted:", v.muted))
+      .catch((err) => {
+        console.warn("[fox] neural play blocked:", err?.name);
+        // Same recovery the LemonSlice dock uses: tell the user, unlock on
+        // any interaction anywhere on the page.
+        setStatus("Click anywhere to enable the fox's audio. 🔊");
+        const unlock = () => {
+          v.play()
+            .then(() => setStatus("Live — just talk. Interrupt him any time. 🦊"))
+            .catch(() => {});
+          a?.play().catch(() => {});
+          document.removeEventListener("click", unlock);
+          document.removeEventListener("touchstart", unlock);
+        };
+        document.addEventListener("click", unlock);
+        document.addEventListener("touchstart", unlock);
+      });
     const sync = () => {
       if (v.videoWidth && v.videoHeight) setNeuralAspect(`${v.videoWidth} / ${v.videoHeight}`);
     };
