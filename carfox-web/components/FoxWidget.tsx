@@ -33,7 +33,8 @@ export default function FoxWidget() {
   }, []);
 
   // The passcode gate is pre-login — no fox until you're inside.
-  if (pathname === "/gate") return null;
+  // /fox-demo is the zero-bloat Ditto test bench — nothing else on the page.
+  if (pathname === "/gate" || pathname === "/fox-demo") return null;
 
   const vehicleSlug = pathname?.startsWith("/vehicles/")
     ? pathname.split("/")[2]
