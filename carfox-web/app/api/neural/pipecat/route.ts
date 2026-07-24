@@ -7,7 +7,9 @@ const PIPECAT = (process.env.FOX_PIPECAT_URL ?? `${NEURAL}/pipecat`).replace(/\/
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const path = req.nextUrl.searchParams.get("path") === "telemetry" ? "telemetry" : "offer";
+    const requested = req.nextUrl.searchParams.get("path") ?? "offer";
+    const allowed = new Set(["offer", "telemetry", "daily/start", "daily/check"]);
+    const path = allowed.has(requested) ? requested : "offer";
     const r = await fetch(`${PIPECAT}/api/${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

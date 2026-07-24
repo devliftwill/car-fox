@@ -12,7 +12,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import FoxLiveCall from "@/components/FoxLiveCall";
-import FoxPipecatCall from "@/components/FoxPipecatCall";
+import FoxDailyCall from "@/components/FoxDailyCall";
 
 type GpuGen = { taskId: string; progress: number; status: string };
 
@@ -459,7 +459,7 @@ export default function AvatarLab() {
             </div>
           )}
           {gpuEngine === "ditto" ? (
-            <FoxPipecatCall key={gpuAvatarId} avatarId={gpuAvatarId} />
+            <FoxDailyCall key={gpuAvatarId} avatarId={gpuAvatarId} />
           ) : (
             <FoxLiveCall key={`${gpuAvatarId}:${gpuEngine}`} neural neuralAvatarId={gpuAvatarId} neuralEngine={gpuEngine} />
           )}
