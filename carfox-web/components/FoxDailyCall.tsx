@@ -90,14 +90,32 @@ export default function FoxDailyCall({ avatarId }: { avatarId: string }) {
         await call.join({ url: seat.room_url, token: seat.token, startVideoOff: true, audioSource: false });
       }
 
-      // LOADER UNTIL ABSOLUTELY READY: hold the connecting overlay until the
-      // fox's video is actually flowing (the engine primes ~10s server-side)
+      // LOADER UNTIL THE FOX ACTUALLY MOVES: while the engine primes, the
+      // stream carries a still photo — revealing that reads as "frozen".
+      // Watch a downscaled pixel-diff and only drop the overlay once real
+      // motion arrives (45s cap so nobody stares at a spinner forever).
       setStatus("Getting the fox ready… ✨");
+      const probe = document.createElement("canvas");
+      probe.width = probe.height = 32;
+      const pctx = probe.getContext("2d", { willReadFrequently: true });
+      let prevPx: Uint8ClampedArray | null = null;
+      let movingHits = 0;
       const t0 = Date.now();
-      while (Date.now() - t0 < 30000) {
+      while (Date.now() - t0 < 45000) {
         const v = videoRef.current;
-        if (v && v.videoWidth > 0 && v.currentTime > 0.5) break;
-        await new Promise((res) => setTimeout(res, 300));
+        if (v && v.videoWidth > 0 && pctx) {
+          pctx.drawImage(v, 0, 0, 32, 32);
+          const px = pctx.getImageData(0, 0, 32, 32).data;
+          if (prevPx) {
+            let diff = 0;
+            for (let i = 0; i < px.length; i += 4) diff += Math.abs(px[i] - prevPx[i]);
+            (window as unknown as { __foxMotion?: number[] }).__foxMotion?.push(diff);
+            movingHits = diff > 600 ? movingHits + 1 : 0;
+            if (movingHits >= 2) break;
+          }
+          prevPx = new Uint8ClampedArray(px);
+        }
+        await new Promise((res) => setTimeout(res, 400));
       }
       setPhase("live");
       setStatus("The fox is waking up… he'll greet you in a moment. 🦊");
