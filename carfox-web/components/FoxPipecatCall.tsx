@@ -142,6 +142,15 @@ export default function FoxPipecatCall({ avatarId }: { avatarId: string }) {
       const ans = await r.json();
       await pc.setRemoteDescription({ sdp: ans.sdp, type: ans.type });
 
+      // LOADER UNTIL ABSOLUTELY READY: hold the connecting overlay until the
+      // fox's video is actually flowing (the engine primes ~10s server-side)
+      setStatus("Getting the fox ready… ✨");
+      const t0 = Date.now();
+      while (Date.now() - t0 < 30000) {
+        const v = videoRef.current;
+        if (v && v.videoWidth > 0 && v.currentTime > 0.5) break;
+        await new Promise((res) => setTimeout(res, 300));
+      }
       setPhase("live");
       setStatus("The fox is waking up… he'll greet you in a moment. 🦊");
     } catch (e) {
