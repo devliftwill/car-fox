@@ -379,7 +379,8 @@ export default function FoxLiveCall({
           if (st.neuralSess) {
             st.utterBuf.push(pcm);
             st.utterLen += pcm.length;
-            if (st.utterLen >= 24000 * 2) flushUtterance(); // ~2s chunks
+            if (st.utterLen >= 18000) flushUtterance(); // ~0.75s chunks — big
+            // batches made replies come out as staccato fragments with seams
             continue;
           }
           // 24k mono PCM → AudioBuffer (the context resamples on playback).
