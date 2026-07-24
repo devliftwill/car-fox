@@ -1,52 +1,27 @@
 "use client";
 
 /**
- * /fox-demo — zero-bloat test bench for the Ditto fox over Daily.
+ * /fox-demo — the live Car Fox, working.
  *
- * ONE thing on the page: the call. No corner dock, no avatar library,
- * no recorder, no thumbnails — so what you see is the engine + transport
- * and nothing else.
+ * This uses the production LemonSlice avatar path (FoxRoomCall): visitor mic
+ * -> LemonSlice-hosted Daily room -> fox-agent (Gemini 3.1 Flash Live, Puck
+ * voice) -> LemonSlice avatar, A/V synced by LemonSlice. It is the same
+ * engine as the corner dock, shown full-size with nothing else on the page.
+ *
+ * (The self-hosted Ditto engine remains an experiment on /avatar; it is not
+ * yet at parity on latency, so the demo runs the proven path.)
  */
-import { useEffect, useState } from "react";
-import FoxDailyCall from "@/components/FoxDailyCall";
+import FoxRoomCall from "@/components/FoxRoomCall";
 
 export default function FoxDemo() {
-  const [studio, setStudio] = useState<"waking" | "ready" | "error">("waking");
-
-  useEffect(() => {
-    let alive = true;
-    let tries = 0;
-    const tick = async () => {
-      const j = await fetch("/api/neural/wake").then((r) => r.json()).catch(() => null);
-      if (!alive) return;
-      if (j?.status === "ready") {
-        setStudio("ready");
-        return;
-      }
-      if (!j || j.status === "error" || ++tries > 40) {
-        setStudio("error");
-        return;
-      }
-      setTimeout(tick, 5000);
-    };
-    void tick();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-neutral-950 p-6">
       <p className="mb-6 text-[13px] uppercase tracking-[0.2em] text-neutral-500">
-        Fox demo — Ditto × Gemini × Daily
+        Car Fox — live
       </p>
-      {studio === "ready" ? (
-        <FoxDailyCall avatarId="fox_ditto" />
-      ) : (
-        <p className="text-[14px] text-neutral-400">
-          {studio === "waking" ? "Waking the studio…" : "Studio unreachable — try again in a minute."}
-        </p>
-      )}
+      <div className="w-full max-w-[440px]">
+        <FoxRoomCall autoStart />
+      </div>
     </main>
   );
 }
