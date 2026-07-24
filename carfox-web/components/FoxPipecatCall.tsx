@@ -37,15 +37,20 @@ export default function FoxPipecatCall({ avatarId }: { avatarId: string }) {
       (window as unknown as Record<string, unknown>).__foxPc = pc; // debug handle
       pc.onconnectionstatechange = () => console.info("[fox] pc:", pc.connectionState);
 
-      // Mic up (the bot's Gemini hears through this) — continue without one.
+      // SmallWebRTC contract: first two transceivers are audio then video,
+      // BOTH sendrecv (the bot force-sets directions and replaces sender
+      // tracks) — plus a data channel for its app messages.
+      let micTrack: MediaStreamTrack | null = null;
       try {
         const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
-        for (const t of mic.getAudioTracks()) pc.addTrack(t, mic);
+        micTrack = mic.getAudioTracks()[0] ?? null;
       } catch {
         console.warn("[fox] no mic — listen-only call");
-        pc.addTransceiver("audio", { direction: "recvonly" });
       }
-      pc.addTransceiver("video", { direction: "recvonly" });
+      const audioTx = pc.addTransceiver("audio", { direction: "sendrecv" });
+      if (micTrack) void audioTx.sender.replaceTrack(micTrack);
+      pc.addTransceiver("video", { direction: "sendrecv" });
+      pc.createDataChannel("chat");
 
       const stream = new MediaStream();
       pc.ontrack = (ev) => {
