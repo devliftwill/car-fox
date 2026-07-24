@@ -49,7 +49,15 @@ export default function FoxPipecatCall({ avatarId }: { avatarId: string }) {
       }
       const audioTx = pc.addTransceiver("audio", { direction: "sendrecv" });
       if (micTrack) void audioTx.sender.replaceTrack(micTrack);
-      pc.addTransceiver("video", { direction: "sendrecv" });
+      // A real (dummy) local video track — matches the reference client's
+      // offer shape; a trackless m-line left the bot's video unsent.
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 2;
+      canvas.getContext("2d")?.fillRect(0, 0, 2, 2);
+      const dummy = (canvas as HTMLCanvasElement & { captureStream(fps?: number): MediaStream })
+        .captureStream(1)
+        .getVideoTracks()[0];
+      pc.addTransceiver(dummy, { direction: "sendrecv" });
       pc.createDataChannel("chat");
 
       const stream = new MediaStream();
