@@ -14,8 +14,18 @@ import { useEffect, useRef, useState } from "react";
 export default function FoxPipecatCall({ avatarId }: { avatarId: string }) {
   const [phase, setPhase] = useState<"idle" | "connecting" | "live" | "error">("idle");
   const [status, setStatus] = useState("");
+  const [needsUnmute, setNeedsUnmute] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const audioSeenRef = useRef(false);
+
+  function beacon(event: string, data: Record<string, unknown> = {}) {
+    void fetch("/api/neural/pipecat?path=telemetry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, ...data, ua: navigator.userAgent.slice(0, 60) }),
+    }).catch(() => {});
+  }
 
   useEffect(() => {
     return () => {
@@ -67,16 +77,42 @@ export default function FoxPipecatCall({ avatarId }: { avatarId: string }) {
         if (!v) return;
         v.srcObject = stream;
         v.muted = false;
-        v.play().catch(() => {
-          setStatus("Click anywhere to enable the fox's audio. 🔊");
-          const unlock = () => {
-            v.play()
-              .then(() => setStatus("Live — just talk. 🦊"))
-              .catch(() => {});
-            document.removeEventListener("click", unlock);
-          };
-          document.addEventListener("click", unlock);
-        });
+        v.play()
+          .then(() => beacon("play_ok", { muted: v.muted }))
+          .catch((err) => {
+            beacon("play_blocked", { err: String(err?.name) });
+            setNeedsUnmute(true);
+          });
+        if (ev.track.kind === "audio" && !audioSeenRef.current) {
+          audioSeenRef.current = true;
+          // self-verify audibility: measure what the speakers actually get
+          try {
+            const ctx = new AudioContext();
+            void ctx.resume().catch(() => {});
+            const an = ctx.createAnalyser();
+            an.fftSize = 2048;
+            ctx.createMediaStreamSource(new MediaStream([ev.track])).connect(an);
+            const buf = new Float32Array(an.fftSize);
+            let peak = 0;
+            let reports = 0;
+            const meter = setInterval(() => {
+              an.getFloatTimeDomainData(buf);
+              let s = 0;
+              for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+              peak = Math.max(peak, Math.sqrt(s / buf.length));
+              reports += 1;
+              if (reports === 15 || reports === 40) {
+                beacon("audio_meter", {
+                  atSec: reports,
+                  peakRms: Math.round(peak * 1000) / 1000,
+                  muted: v.muted,
+                  paused: v.paused,
+                });
+                if (reports === 40) clearInterval(meter);
+              }
+            }, 1000);
+          } catch {}
+        }
       };
 
       const offer = await pc.createOffer();
@@ -127,6 +163,24 @@ export default function FoxPipecatCall({ avatarId }: { avatarId: string }) {
       >
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} autoPlay playsInline className="h-full w-full object-cover" />
+        {needsUnmute && (
+          <button
+            onClick={() => {
+              const v = videoRef.current;
+              if (!v) return;
+              v.muted = false;
+              v.play()
+                .then(() => {
+                  beacon("unmute_ok", {});
+                  setNeedsUnmute(false);
+                })
+                .catch((e) => beacon("unmute_failed", { err: String(e?.name) }));
+            }}
+            className="absolute inset-x-0 bottom-6 mx-auto w-fit rounded-full bg-white/95 px-6 py-3 text-[15px] font-semibold text-neutral-900 shadow-xl"
+          >
+            🔊 Tap to hear the fox
+          </button>
+        )}
         {phase !== "live" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-neutral-900/80 p-6 text-center">
             {phase === "connecting" ? (
