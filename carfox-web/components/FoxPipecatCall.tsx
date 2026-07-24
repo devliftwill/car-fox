@@ -34,6 +34,8 @@ export default function FoxPipecatCall({ avatarId }: { avatarId: string }) {
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
       pcRef.current = pc;
+      (window as unknown as Record<string, unknown>).__foxPc = pc; // debug handle
+      pc.onconnectionstatechange = () => console.info("[fox] pc:", pc.connectionState);
 
       // Mic up (the bot's Gemini hears through this) — continue without one.
       try {
