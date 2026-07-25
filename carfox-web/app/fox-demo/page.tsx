@@ -60,6 +60,23 @@ function SelfHosted() {
     };
   }, []);
 
+  // Keep the GPU box awake while this page is open: it powers down ~3 minutes
+  // after the last call, which cost a ~2 minute wake if you paused between
+  // conversations. Closing the page lets it sleep again (the lock expires),
+  // so the cost saving is preserved.
+  useEffect(() => {
+    if (studio !== "ready") return;
+    const ping = () =>
+      void fetch("/api/neural/pipecat?path=keepalive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }).catch(() => {});
+    ping();
+    const id = setInterval(ping, 60000);
+    return () => clearInterval(id);
+  }, [studio]);
+
   if (studio === "ready") {
     return (
       <>

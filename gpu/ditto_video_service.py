@@ -414,9 +414,15 @@ class DittoVideoService(AIService):
                 # amplitude test, so use a lower trigger plus HANGOVER: once an
                 # utterance starts, keep the whole thing marked as speech until
                 # it has been quiet for FOX_SPEECH_HANG windows (default 2s).
-                loud = float(np.sqrt(np.mean(hop * hop))) > 0.004
+                # LATENCY: hangover must be SHORT. At 10 windows (2s) every
+                # utterance kept 2s of trailing silence marked as speech, so it
+                # was queued for playout instead of dropped -- the next reply had
+                # to wait behind it, adding up to 2s per turn. 2 windows (400ms)
+                # still protects word tails without queueing dead air. Pair it
+                # with a lower trigger so quiet consonants register as speech.
+                loud = float(np.sqrt(np.mean(hop * hop))) > 0.002
                 if loud:
-                    self._hang = int(os.environ.get("FOX_SPEECH_HANG", "10"))
+                    self._hang = int(os.environ.get("FOX_SPEECH_HANG", "2"))
                 elif getattr(self, "_hang", 0) > 0:
                     self._hang -= 1
                 is_speech = loud or getattr(self, "_hang", 0) > 0
@@ -429,9 +435,15 @@ class DittoVideoService(AIService):
                 dt = _time.perf_counter() - t0
                 self._hop_ms = getattr(self, "_hop_ms", 0.0) * 0.9 + dt * 1000 * 0.1
                 self._hops = getattr(self, "_hops", 0) + 1
-                if self._hops % 50 == 1:
+                if self._hops % 25 == 1:
+                    # QUEUE CENSUS: latency compounds per turn, so watch every
+                    # buffer that could be growing. ledger = fed-not-yet-emitted
+                    # (engine depth); avq = emitted-not-yet-played (playout);
+                    # pend = playout hops staged in the feeder.
                     logger.info(
-                        f"ditto-pipecat: gen pace {self._hop_ms:.0f}ms/200ms hop, ledger={len(self._ledger)}"
+                        f"ditto-pipecat: pace {self._hop_ms:.0f}ms | ledger={len(self._ledger)} "
+                        f"avq={len(self._audio_out)} pendP={len(pendingP)} bufP={len(bufP)//HOP_P_BYTES} "
+                        f"buf16={len(buf)//HOP} speech_q={len(self._play)}"
                     )
                 fed = True
                 # Feed at realtime. (Feeding faster only helps if the consumer
@@ -448,6 +460,12 @@ class DittoVideoService(AIService):
                 deadline = _time.perf_counter()
 
     def _to_bytes(self, frames5):
+        if not getattr(self, "_shape_logged", False) and frames5:
+            self._shape_logged = True
+            logger.info(
+                f"ditto-pipecat: engine frame shape {frames5[0].shape} "
+                f"(resize needed: {frames5[0].shape[:2] != (512, 512)})"
+            )
         out = []
         for f in frames5:
             img = f if f.shape[2] == 3 else f[:, :, :3]

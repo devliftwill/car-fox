@@ -159,8 +159,13 @@ def _build_pipeline(transport, source: str):
         system_instruction=FOX_PROMPT,
         # reply reliability + snappier turns: trigger on quieter speech,
         # close the user's turn fast (this was the ~5s of the 13s reply lag)
+        # START sensitivity HIGH made the fox interrupt itself: speakers bleed
+        # into the mic, Gemini hears "user talking" and truncates mid-sentence
+        # (reported as "the last thing the fox said got cut off"). LOW keeps
+        # deliberate interruptions working without echo triggering them.
+        # END sensitivity stays HIGH + a short silence window so turns close fast.
         params=InputParams(vad=GeminiVADParams(
-            start_sensitivity="START_SENSITIVITY_HIGH",
+            start_sensitivity=os.environ.get("FOX_VAD_START", "START_SENSITIVITY_LOW"),
             end_sensitivity="END_SENSITIVITY_HIGH",
             silence_duration_ms=int(os.environ.get("FOX_VAD_SILENCE_MS", "300")),
         )),
@@ -431,6 +436,20 @@ async def telemetry(body: dict):
     if body.get("event") in ("play_ok", "unmute_ok") and _current.get("greet"):
         await _current["greet"]()
     return {"ok": True}
+
+
+@app.post("/api/keepalive")
+async def keepalive(body: dict = None):
+    """Touch the keep-awake lock: while a visitor has the demo page open the
+    box must not power itself off between calls (that cost them a ~2 minute
+    wake). The lock is only honoured for 3 minutes, so closing the page lets
+    the machine sleep again and the cost saving is preserved."""
+    try:
+        with open("/var/tmp/fox-keep-awake", "w") as f:
+            f.write(str(time.time()))
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
 
 
 @app.get("/health")

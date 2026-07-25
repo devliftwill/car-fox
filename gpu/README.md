@@ -35,10 +35,21 @@ instead of climbing), so latency is now constant instead of compounding.
 
     GEMINI_API_KEY=...        DAILY_API_KEY=...
     DITTO_WARP_BATCH=4        DITTO_DECODE_BATCH=4
-    FOX_OVERLAP=50            # motion-clip granularity; 50 halves in-flight
-                              # depth (5.8s -> 2.8s) at no throughput cost
+    FOX_OVERLAP=40            # motion-clip granularity. CRITICAL: at 50 the
+                              # engine ran a few % UNDER realtime inside the
+                              # live process, so its queue crept ~200ms every 5s
+                              # and replies compounded 7.4->8.7->10.6s. At 40 the
+                              # diffusion runs less often, headroom returns, the
+                              # queue holds flat (17-21) and replies are STABLE
+                              # ~6-7s over 5 turns. Do not raise it without
+                              # re-running the multi-turn gate.
     FOX_LEDGER_TARGET=6       FOX_WARM_WINDOWS=0
     FOX_AV_OFFSET_TICKS=0     FOX_RECORD=0   # 1 = dump /tmp/fox_rec.mp4
+    FOX_SPEECH_HANG=2         # speech hangover in windows (400ms). At 10 (2s)
+                              # trailing dead air got queued for playout and
+                              # added up to 2s of delay PER TURN.
+    FOX_VAD_START=START_SENSITIVITY_LOW   # HIGH let speaker bleed into the mic
+                              # interrupt the fox mid-sentence ("got cut off")
 
 ## Verify before you ship: `acceptance_test.py`
 

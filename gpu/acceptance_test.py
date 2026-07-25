@@ -57,6 +57,9 @@ LIMITS = {
     "mouth_openness_std_min": 4.0,
     "video_fps_min": 20.0,
     "reply_latency_s_max": 12.0,
+    "worst_reply_s_max": 12.0,      # every turn, not just the first
+    "latency_growth_s_max": 2.5,    # delay must not compound across turns
+    "min_turns_answered": 3,
     # NOTE: no high-frequency floor. MEASURED: Gemini's TTS puts 99.77% of its
     # energy below 4kHz and 0.03% above 8kHz -- it is band-limited at the
     # source, so no playout path can produce high-frequency content and such a
@@ -266,28 +269,59 @@ def main():
         print("FAIL: the fox never greeted")
         return 1
 
-    # --- ask the question, paced like a real speaker ------------------------
-    print(f"→ asking the question ({q_secs:.1f}s)", flush=True)
-    q_start = time.time()
-    for i in range(0, len(q), TICK):
-        mic.write_frames(q[i : i + TICK].tobytes())
-        time.sleep(TICK / SR * 0.98)
-    q_end = time.time()
-    audio_len_at_q_end = len(h.audio_np())
+    # --- multi-turn: real conversations are several exchanges, and delay that
+    # --- compounds per turn is invisible to a single-turn test ---------------
+    def speak_question():
+        for i in range(0, len(q), TICK):
+            mic.write_frames(q[i : i + TICK].tobytes())
+            time.sleep(TICK / SR * 0.98)
+        return time.time()
 
-    # --- wait for the reply -------------------------------------------------
-    reply_latency = None
-    while time.time() - q_end < LIMITS["reply_within_s"]:
-        time.sleep(0.1)
-        tail = h.audio_np()[audio_len_at_q_end:]
-        r = rms_frames(tail)
-        if len(r) and float(r.max()) > 0.03:
-            reply_latency = time.time() - q_end
-            print(f"→ fox replied {reply_latency:.1f}s after the question", flush=True)
-            break
-    # let the reply finish so it can be measured
-    time.sleep(6)
+    def wait_for_reply(since_len, budget):
+        t_end = time.time() + budget
+        while time.time() < t_end:
+            time.sleep(0.1)
+            r = rms_frames(h.audio_np()[since_len:])
+            if len(r) and float(r.max()) > 0.03:
+                return time.time()
+        return None
+
+    def wait_until_quiet(hold=1.5, cap=20.0):
+        t0_ = time.time()
+        quiet = 0.0
+        last_ = time.time()
+        while time.time() - t0_ < cap:
+            time.sleep(0.1)
+            r = rms_frames(h.audio_np()[-int(SPK_SR * 0.4):])
+            loud_ = bool(len(r)) and float(r.max()) > 0.03
+            now_ = time.time()
+            quiet = 0.0 if loud_ else quiet + (now_ - last_)
+            last_ = now_
+            if quiet >= hold:
+                return
+
+    turns = int(os.environ.get("FOX_TEST_TURNS", "3"))
+    latencies = []
+    for t_i in range(turns):
+        print(f"→ turn {t_i+1}/{turns}: asking ({q_secs:.1f}s)", flush=True)
+        mark = len(h.audio_np())
+        q_end = speak_question()
+        got = wait_for_reply(mark, LIMITS["reply_within_s"])
+        if got is None:
+            print(f"   turn {t_i+1}: NO REPLY within {LIMITS['reply_within_s']}s", flush=True)
+            latencies.append(None)
+        else:
+            lat = got - q_end
+            latencies.append(lat)
+            print(f"   turn {t_i+1}: replied {lat:.1f}s after I stopped talking", flush=True)
+        wait_until_quiet()
+
+    time.sleep(2)
     h.stop = True
+    ok_lat = [x for x in latencies if x is not None]
+    reply_latency = ok_lat[0] if ok_lat else None
+    worst_latency = max(ok_lat) if ok_lat else None
+    latency_growth = (ok_lat[-1] - ok_lat[0]) if len(ok_lat) >= 2 else 0.0
 
     # --- metrics ------------------------------------------------------------
     pcm = h.audio_np()
@@ -320,6 +354,9 @@ def main():
         "greeting_at_s": round(greet_at, 2),
         "greeting_len_s": round(greet_len, 2),
         "reply_latency_s": round(reply_latency, 2) if reply_latency else None,
+        "reply_latencies_s": [round(x, 2) if x else None for x in latencies],
+        "worst_reply_s": round(worst_latency, 2) if worst_latency else None,
+        "latency_growth_s": round(latency_growth, 2),
         "micro_gaps_per_s": round(gaps, 2),
         "identical_frame_ratio": round(ident_ratio, 3),
         "mouth_openness_std": round(open_std, 1),
@@ -337,6 +374,12 @@ def main():
          f'{m["reply_latency_s"]}s' if reply_latency else "NO REPLY"),
         ("reply is prompt", (reply_latency or 99) <= LIMITS["reply_latency_s_max"],
          f'{m["reply_latency_s"]}s <= {LIMITS["reply_latency_s_max"]}s'),
+        ("answers every turn", len(ok_lat) >= LIMITS["min_turns_answered"],
+         f'{len(ok_lat)}/{turns} turns answered'),
+        ("no turn is slow", (worst_latency or 99) <= LIMITS["worst_reply_s_max"],
+         f'worst {m["worst_reply_s"]}s <= {LIMITS["worst_reply_s_max"]}s  turns={m["reply_latencies_s"]}'),
+        ("delay does not compound", latency_growth <= LIMITS["latency_growth_s_max"],
+         f'grew {latency_growth:+.1f}s across turns <= {LIMITS["latency_growth_s_max"]}s'),
         ("voice is continuous", gaps <= LIMITS["micro_gaps_per_s_max"],
          f'{gaps:.2f} gaps/s <= {LIMITS["micro_gaps_per_s_max"]}'),
         ("face is not frozen", ident_ratio <= LIMITS["identical_frame_ratio_max"],

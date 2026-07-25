@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const requested = req.nextUrl.searchParams.get("path") ?? "offer";
-    const allowed = new Set(["offer", "telemetry", "daily/start", "daily/check"]);
+    const allowed = new Set(["offer", "telemetry", "daily/start", "daily/check", "keepalive"]);
     const path = allowed.has(requested) ? requested : "offer";
     const r = await fetch(`${PIPECAT}/api/${path}`, {
       method: "POST",
