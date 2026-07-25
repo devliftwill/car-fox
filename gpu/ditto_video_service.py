@@ -147,6 +147,11 @@ class DittoVideoService(AIService):
         self._base = 0             # writer frame index where real output begins
         self._frame_setter = None  # Daily path: writer clocks frames to audio
         self._last_speech_t = 0.0  # feeder: last time a speech hop was fed
+        # Rolling session recording (what the visitor actually receives).
+        rec_secs = int(os.environ.get("FOX_RECORD_SECS", "90"))
+        self._rec_on = os.environ.get("FOX_RECORD_SESSIONS", "1") == "1"
+        self._rec_ring = deque(maxlen=rec_secs * 25) if self._rec_on else None
+        self._rec_lock = threading.Lock()
         self._last_audio_t = 0.0   # feeder: last time Gemini audio arrived
 
     def set_audio_sink_getter(self, getter):
@@ -252,6 +257,21 @@ class DittoVideoService(AIService):
                     self._rec.append((piece, self._last_pub))
                     if len(self._rec) == 900:
                         self._flush_recording()
+                # Rolling ring for the whole session (JPEG so 90s fits in RAM).
+                if self._rec_ring is not None:
+                    jpg = None
+                    if fb_now is not None:
+                        try:
+                            arr = np.frombuffer(fb_now, dtype=np.uint8).reshape(512, 512, 3)
+                            ok, enc = cv2.imencode(
+                                ".jpg", arr[:, :, ::-1],
+                                [int(cv2.IMWRITE_JPEG_QUALITY), int(os.environ.get("FOX_RECORD_Q", "55"))],
+                            )
+                            jpg = enc.tobytes() if ok else None
+                        except Exception:
+                            jpg = None
+                    with self._rec_lock:
+                        self._rec_ring.append((piece, jpg))
             except Exception:
                 logger.exception("ditto-pipecat: AUDIO WRITER DIED")
                 return
@@ -261,6 +281,52 @@ class DittoVideoService(AIService):
                 _time.sleep(rest)
             elif rest < -1.0:
                 deadline = _time.perf_counter()
+
+    def dump_session_recording(self, path):
+        """Mux the rolling ring to `path` (mp4). Returns the path or None."""
+        if not self._rec_ring:
+            return None
+        import shutil
+        import subprocess
+        import tempfile
+
+        with self._rec_lock:
+            ring = list(self._rec_ring)
+        if not ring:
+            return None
+        tmp = tempfile.mkdtemp(prefix="foxrec-")
+        try:
+            audio_path = os.path.join(tmp, "a.raw")
+            n_frames, last = 0, None
+            with open(audio_path, "wb") as fa:
+                for piece, jpg in ring:
+                    fa.write(piece)
+                    # hold the previous frame when a tick published none, so
+                    # audio and video stay aligned tick-for-tick
+                    use = jpg if jpg is not None else last
+                    if use is None:
+                        continue
+                    last = use
+                    with open(os.path.join(tmp, f"{n_frames:06d}.jpg"), "wb") as ff:
+                        ff.write(use)
+                    n_frames += 1
+            if n_frames < 5:
+                return None
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-framerate", "25", "-i", os.path.join(tmp, "%06d.jpg"),
+                 "-f", "s16le", "-ar", str(PLAY_SR), "-ac", "1", "-i", audio_path,
+                 "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                 "-c:a", "aac", "-shortest", path],
+                check=True, capture_output=True, timeout=180,
+            )
+            logger.info(f"ditto-pipecat: session recording -> {path} ({n_frames/25:.1f}s)")
+            return path
+        except Exception:
+            logger.exception("ditto-pipecat: session recording failed")
+            return None
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def _flush_recording(self):
         """Mux the tick-aligned (audio, on-screen-frame) log into an mp4 —

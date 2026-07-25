@@ -391,10 +391,18 @@ async def daily_start(body: dict):
         # and the sessions actually worth diagnosing are the visitor's, not the
         # ones I run myself.
         try:
+            stamp = int(time.time())
             snap = trace_snapshot(4000)
-            path = f"/var/tmp/fox-session-{int(time.time())}.json"
+            path = f"/var/tmp/fox-session-{stamp}.json"
             with open(path, "w") as fh:
                 json.dump(snap, fh)
+            # the media itself, so "the mouth was off" can be watched back
+            svc = _current.get("ditto")
+            if svc is not None:
+                try:
+                    svc.dump_session_recording(f"/var/tmp/fox-session-{stamp}.mp4")
+                except Exception as e:
+                    logger.warning(f"recording dump failed: {e}")
             c = snap["counters"]
             logger.info(
                 f"SESSION SUMMARY -> {path} | interruptions={c['interruptions']} "
@@ -478,6 +486,34 @@ async def keepalive(body: dict = None):
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)[:120]}
+
+
+@app.get("/api/recordings")
+async def list_recordings():
+    """Recent session artefacts: an mp4 of exactly what the visitor received
+    and the matching per-window trace."""
+    import glob
+
+    out = []
+    for f in sorted(glob.glob("/var/tmp/fox-session-*"), reverse=True)[:40]:
+        try:
+            out.append({"file": os.path.basename(f), "bytes": os.path.getsize(f)})
+        except OSError:
+            pass
+    return {"recordings": out}
+
+
+@app.get("/api/recording/{name}")
+async def get_recording(name: str):
+    """Download one artefact. Name-only, no paths — this is a debug surface."""
+    from fastapi.responses import FileResponse
+
+    if "/" in name or ".." in name or not name.startswith("fox-session-"):
+        return {"error": "bad name"}
+    path = os.path.join("/var/tmp", name)
+    if not os.path.exists(path):
+        return {"error": "not found"}
+    return FileResponse(path)
 
 
 @app.get("/api/trace")

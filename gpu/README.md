@@ -76,6 +76,34 @@ because WebRTC compression makes every frame differ slightly.
   4-8kHz share 0.33%; `...gemini-2.5-flash-native-audio-preview-12-2025` ->
   4.3x more 4-8kHz energy (brighter voice) but reply ~15s (fails the gate).
 
+## Session recordings (troubleshooting a real call)
+
+Every call records what the visitor actually receives — each 40ms audio slice
+paired with the frame shown alongside it — and writes the media and the trace
+when the call ends:
+
+    /var/tmp/fox-session-<ts>.mp4    what they saw and heard
+    /var/tmp/fox-session-<ts>.json   per-window trace + counters
+
+Reachable without shell access (needs the site passcode cookie):
+
+    /api/neural/diag?path=recordings
+    /api/neural/diag?path=recording/fox-session-<ts>.mp4
+    /api/neural/diag?path=turns      # think / intake / engine / playout per turn
+
+Memory-bounded: frames are JPEG-encoded into a ring of `FOX_RECORD_SECS`
+(default 90s, ~80MB). `FOX_RECORD_SESSIONS=0` disables. Costs no measurable
+throughput — the gate passes with it on.
+
+Counters worth reading first: `pair_drift` (audio<->frame pairing, must be 0),
+`interruptions` (more than one per turn means mic echo is truncating the fox),
+`speech_audio_dropped` (must be 0), `playout_underruns`.
+
+**Do not trust the automated A/V-sync correlation.** On a real recording it
+gave 0.02-0.20 correlation with lags scattered from +120ms to -840ms — the
+mouth-openness proxy is too weak on a stylized 3D fox to conclude anything.
+Watch the mp4 instead.
+
 ## Measuring it honestly
 
 `FOX_RECORD=1` makes the bridge mux exactly what it transmits — each 40ms audio
