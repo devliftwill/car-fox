@@ -8,6 +8,7 @@ Single active session (the A100 runs one avatar pipeline at a time).
 """
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -36,7 +37,7 @@ try:  # pipecat >= 0.0.100 layout, with legacy fallback
 except ImportError:  # pragma: no cover
     from pipecat.transports.services.daily import DailyParams, DailyTransport
 
-from ditto_video_service import DittoVideoService, FramePacer, get_sdk
+from ditto_video_service import DittoVideoService, FramePacer, get_sdk, trace_snapshot
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 DAILY_API_KEY = os.environ.get("DAILY_API_KEY", "")
@@ -165,7 +166,15 @@ def _build_pipeline(transport, source: str):
         # deliberate interruptions working without echo triggering them.
         # END sensitivity stays HIGH + a short silence window so turns close fast.
         params=InputParams(vad=GeminiVADParams(
-            start_sensitivity=os.environ.get("FOX_VAD_START", "START_SENSITIVITY_LOW"),
+            # Only HIGH/LOW are valid here -- "MEDIUM" made Gemini reject the
+            # whole session (1007 Invalid value ... start_of_speech_sensitivity)
+            # and the fox went silent. Validate rather than trust the env.
+            start_sensitivity=(
+                os.environ.get("FOX_VAD_START", "START_SENSITIVITY_LOW")
+                if os.environ.get("FOX_VAD_START", "START_SENSITIVITY_LOW")
+                in ("START_SENSITIVITY_HIGH", "START_SENSITIVITY_LOW")
+                else "START_SENSITIVITY_LOW"
+            ),
             end_sensitivity="END_SENSITIVITY_HIGH",
             silence_duration_ms=int(os.environ.get("FOX_VAD_SILENCE_MS", "300")),
         )),
@@ -377,12 +386,31 @@ async def daily_start(body: dict):
     rt = asyncio.create_task(runner.run(task))
     _current["runner_task"] = rt
 
+    def _dump_session():
+        # Persist this call's trace. The in-memory ring dies when the box sleeps,
+        # and the sessions actually worth diagnosing are the visitor's, not the
+        # ones I run myself.
+        try:
+            snap = trace_snapshot(4000)
+            path = f"/var/tmp/fox-session-{int(time.time())}.json"
+            with open(path, "w") as fh:
+                json.dump(snap, fh)
+            c = snap["counters"]
+            logger.info(
+                f"SESSION SUMMARY -> {path} | interruptions={c['interruptions']} "
+                f"pair_drift={c['pair_drift']} speech_dropped={c['speech_audio_dropped']} "
+                f"underruns={c['playout_underruns']} windows_fed={c['windows_fed']}"
+            )
+        except Exception as e:
+            logger.warning(f"session dump failed: {e}")
+
     def _session_done(_t):
         # the pipeline has fully unwound: report idle so the idle-check can
         # power the machine down.
         if _current.get("task") is task:
             _current["task"] = None
             logger.info("pipecat[daily]: session finished — now idle")
+            _dump_session()
 
     rt.add_done_callback(_session_done)
 
@@ -450,6 +478,64 @@ async def keepalive(body: dict = None):
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)[:120]}
+
+
+@app.get("/api/trace")
+async def get_trace(limit: int = 400):
+    """Per-window pipeline trace + counters for the last minutes of calls.
+
+    Answers, with timestamps rather than guesses:
+      * where a reply's delay went (Gemini thinking vs engine vs playout)
+      * whether audio and frames stayed paired  (counters.pair_drift must be 0)
+      * whether the fox is being interrupted    (counters.interruptions)
+      * whether playout is starving             (counters.playout_underruns)
+    """
+    return trace_snapshot(limit)
+
+
+@app.get("/api/turns")
+async def get_turns():
+    """Delay attribution per turn, derived from the trace.
+
+    user_started_speaking -> gemini_audio_first  = Gemini listening + thinking
+    gemini_audio_first    -> fed_speech_start    = our intake
+    fed_speech_start      -> emit_speech_start   = the face engine
+    emit_speech_start     -> play_speech_start   = playout buffering
+    """
+    snap = trace_snapshot(4000)
+    evs = snap["events"]
+    turns, cur = [], None
+    for e in evs:
+        ev, t = e["ev"], e["t"]
+        if ev == "user_started_speaking":
+            if cur:
+                turns.append(cur)
+            cur = {"user_start": t}
+        elif cur is None:
+            continue
+        elif ev == "gemini_audio_first" and "gemini" not in cur:
+            cur["gemini"] = t
+        elif ev == "fed_speech_start" and "fed" not in cur:
+            cur["fed"] = t
+        elif ev == "emit_speech_start" and "emit" not in cur:
+            cur["emit"] = t
+        elif ev == "play_speech_start" and "play" not in cur:
+            cur["play"] = t
+    if cur:
+        turns.append(cur)
+
+    out = []
+    for i, t in enumerate(turns[-12:]):
+        row = {"turn": i + 1}
+        def gap(a, b):
+            return round(t[b] - t[a], 2) if a in t and b in t else None
+        row["think_s"] = gap("user_start", "gemini")
+        row["intake_s"] = gap("gemini", "fed")
+        row["engine_s"] = gap("fed", "emit")
+        row["playout_s"] = gap("emit", "play")
+        row["total_s"] = gap("user_start", "play")
+        out.append(row)
+    return {"turns": out, "counters": snap["counters"]}
 
 
 @app.get("/health")

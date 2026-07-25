@@ -318,10 +318,15 @@ def main():
 
     time.sleep(2)
     h.stop = True
-    ok_lat = [x for x in latencies if x is not None]
+    # A sub-second "reply" is leftover/queued audio, not an answer -- counting it
+    # let a badly compounding config (4.9 -> 19.5s, one turn unanswered) show a
+    # NEGATIVE growth and pass. Treat those as non-answers.
+    ok_lat = [x for x in latencies if x is not None and x >= 1.0]
     reply_latency = ok_lat[0] if ok_lat else None
     worst_latency = max(ok_lat) if ok_lat else None
-    latency_growth = (ok_lat[-1] - ok_lat[0]) if len(ok_lat) >= 2 else 0.0
+    # growth = worst-so-far vs the first answer, so a single fast turn at the end
+    # cannot mask a run that degraded in the middle.
+    latency_growth = (max(ok_lat) - ok_lat[0]) if len(ok_lat) >= 2 else 0.0
 
     # --- metrics ------------------------------------------------------------
     pcm = h.audio_np()

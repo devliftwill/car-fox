@@ -15,6 +15,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from collections import deque
 
 import numpy as np
@@ -52,6 +53,33 @@ HOP = 640 * CHUNK_FRAMES[1]        # 3200 samples = 200ms = 5 video frames
 PLAY_SR = int(os.environ.get("FOX_PLAY_SR", "24000"))
 HOP_P = PLAY_SR // 5               # samples of playout audio per 200ms hop
 HOP_P_BYTES = HOP_P * 2
+
+# ---------------------------------------------------------------------------
+# TRACE: every 200ms window of speech gets an id and is timestamped at each
+# stage (fed to engine -> frames emerged -> played out). That turns "there's
+# delay and the mouth is off" into a number per stage, and makes broken
+# audio<->frame pairing impossible to miss.
+# Inspect: GET /api/trace (JSON) or watch the "TURN" lines in the journal.
+# ---------------------------------------------------------------------------
+TRACE = deque(maxlen=4000)
+TRACE_LOCK = threading.Lock()
+COUNTERS = {
+    "windows_fed": 0, "windows_emitted": 0, "windows_played": 0,
+    "batches_consumed": 0, "idle_audio_dropped": 0, "speech_audio_dropped": 0,
+    "frames_published": 0, "playout_underruns": 0, "interruptions": 0,
+    "pair_drift": 0,   # windows_emitted - batches_consumed; MUST stay 0
+}
+
+
+def trace(event, **kw):
+    with TRACE_LOCK:
+        TRACE.append({"t": round(time.time(), 3), "ev": event, **kw})
+
+
+def trace_snapshot(limit=400):
+    with TRACE_LOCK:
+        return {"counters": dict(COUNTERS), "events": list(TRACE)[-limit:]}
+
 
 _sdk = None
 _sdk_lock = threading.Lock()
@@ -154,13 +182,14 @@ class DittoVideoService(AIService):
                 # Skip stale IDLE windows (audio=None) when the queue runs deep
                 # so a reply never waits behind buffered idle; speech is never
                 # skipped. Then expand one window into 5 aligned 40ms ticks.
-                audio, frames = self._audio_out.popleft()
+                audio, frames, wid = self._audio_out.popleft()
                 while audio is None and len(self._audio_out) > 3:
-                    audio, frames = self._audio_out.popleft()
+                    audio, frames, wid = self._audio_out.popleft()
                 for j in range(5):
                     pending.append((
                         audio[j * slice_bytes : (j + 1) * slice_bytes] if audio else silence,
                         frames[j] if frames else None,
+                        wid if audio else -1,   # window id, for the trace
                     ))
             # JITTER CUSHION: the engine delivers ~1.2s bursts, so playing the
             # instant a window lands leaves the buffer dry between bursts and
@@ -189,7 +218,14 @@ class DittoVideoService(AIService):
                 self._debt -= 1
                 piece, fb = silence, None
             else:
-                piece, fb = pending.popleft()
+                piece, fb, pw = pending.popleft()
+                if pw > 0:
+                    COUNTERS["windows_played"] += 1
+                    if not getattr(self, "_play_utt_open", False):
+                        self._play_utt_open = True
+                        trace("play_speech_start", wid=pw, pending=len(pending))
+                elif getattr(self, "_play_utt_open", False):
+                    self._play_utt_open = False
             # audio sits ~200ms deeper in the playout chain (mic buffer +
             # jitter buffer) than video — delay frame publishing a few ticks
             # so lips land ON the voice, not ahead of it (measured -200ms)
@@ -206,6 +242,7 @@ class DittoVideoService(AIService):
                 sink.write_frames(piece)
                 if fb_now is not None and self._frame_setter is not None:
                     self._frame_setter(fb_now)
+                    COUNTERS["frames_published"] += 1
                 self._awrites = getattr(self, "_awrites", 0) + 1
                 if self._awrites % 500 == 1:
                     logger.info(f"ditto-pipecat: audio device writes {self._awrites}")
@@ -429,7 +466,14 @@ class DittoVideoService(AIService):
                 if is_speech:
                     self._last_speech_t = _time.perf_counter()
                 hop_out = pendingP.popleft() if pendingP else (b"\x00" * HOP_P_BYTES)
-                self._ledger.append((hop_out, is_speech))
+                self._wid = getattr(self, "_wid", 0) + 1
+                self._ledger.append((hop_out, is_speech, self._wid))
+                COUNTERS["windows_fed"] += 1
+                if is_speech and not getattr(self, "_utt_open", False):
+                    self._utt_open = True
+                    trace("fed_speech_start", wid=self._wid, ledger=len(self._ledger))
+                elif not is_speech and getattr(self, "_utt_open", False) and getattr(self, "_hang", 0) == 0:
+                    self._utt_open = False
                 t0 = _time.perf_counter()
                 sdk.run_chunk(window, chunksize=CHUNK_FRAMES)  # blocking; CUDA releases the GIL
                 dt = _time.perf_counter() - t0
@@ -500,7 +544,12 @@ class DittoVideoService(AIService):
                         break
                 if self._stopping:
                     return
-                hop, is_sp = self._ledger.popleft() if self._ledger else (b"\x00" * HOP_P_BYTES, False)
+                hop, is_sp, wid = (
+                    self._ledger.popleft() if self._ledger else (b"\x00" * HOP_P_BYTES, False, -1)
+                )
+                COUNTERS["batches_consumed"] += 1
+                COUNTERS["windows_emitted"] += 1
+                COUNTERS["pair_drift"] = COUNTERS["windows_emitted"] - COUNTERS["batches_consumed"]
                 if not getattr(self, "_primed", False):
                     # Mark primed on the FIRST batch of any kind. Gating this on
                     # a speech batch deadlocked the greeting: the greeting waits
@@ -518,7 +567,9 @@ class DittoVideoService(AIService):
                     # (it carries no words) but its FRAMES are still shown, so
                     # the face keeps breathing/blinking instead of freezing.
                     # audio=None marks it skippable in the writer.
-                    self._audio_out.append((None, self._to_bytes(frames5)))
+                    COUNTERS["idle_audio_dropped"] += 1
+                    self._emit_utt_open = False
+                    self._audio_out.append((None, self._to_bytes(frames5), wid))
                     continue
                 self._recv_batches = getattr(self, "_recv_batches", 0) + 1
                 if self._recv_batches % 100 == 0:
@@ -527,7 +578,12 @@ class DittoVideoService(AIService):
                     )
                 # Daily path: hand the writer this window's REAL audio + frames.
                 # (SmallWebRTC fallback is not driven from this thread.)
-                self._audio_out.append((hop, self._to_bytes(frames5)))
+                if is_sp and not getattr(self, "_emit_utt_open", False):
+                    self._emit_utt_open = True
+                    trace("emit_speech_start", wid=wid, ledger=len(self._ledger), avq=len(self._audio_out))
+                elif not is_sp:
+                    self._emit_utt_open = False
+                self._audio_out.append((hop, self._to_bytes(frames5), wid))
         except Exception:
             logger.exception("ditto-pipecat: EMITTER THREAD DIED")
 
@@ -540,6 +596,9 @@ class DittoVideoService(AIService):
                 self._odd_audio_logged = True
                 logger.warning(f"ditto-pipecat: NON-TTS audio frame passing through: {type(frame).__name__}")
         if isinstance(frame, TTSAudioRawFrame):
+            if not getattr(self, "_tts_open", False):
+                self._tts_open = True
+                trace("gemini_audio_first", rate=frame.sample_rate)
             if not getattr(self, "_sr_logged", False):
                 self._sr_logged = True
                 logger.info(
@@ -576,13 +635,21 @@ class DittoVideoService(AIService):
             except Exception as e:
                 await self.push_error(error_msg=f"ditto audio in: {e}", exception=e)
             return  # engine audio comes back out paired with video
+        if isinstance(frame, UserStartedSpeakingFrame):
+            trace("user_started_speaking")
+        if isinstance(frame, InterruptionFrame):
+            COUNTERS["interruptions"] += 1
+            trace("interruption", note="fox truncated; false ones come from mic echo")
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
             with self._speech_lock:
                 self._speech.clear()
             if hasattr(self, "_ledger"):
                 # mark queued speech hops as droppable silence
-                self._ledger = deque(((h, False) for h, _ in self._ledger))
+                self._ledger = deque(((h, False, w) for h, _, w in self._ledger))
         if isinstance(frame, TTSStoppedFrame):
+            if getattr(self, "_tts_open", False):
+                self._tts_open = False
+                trace("gemini_audio_done")
             return
         await self.push_frame(frame, direction)
 
