@@ -18,11 +18,25 @@ import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import FoxRoomCall from "@/components/FoxRoomCall";
 import FoxDailyCall from "@/components/FoxDailyCall";
+import FoxAvatarPicker from "@/components/FoxAvatarPicker";
+
+const PICK_KEY = "carfox.demoAvatarId";
 
 function SelfHosted() {
   const [studio, setStudio] = useState<"waking" | "ready" | "error">("waking");
   const [secs, setSecs] = useState(0);
+  const [avatarId, setAvatarId] = useState("fox_ditto");
   const startedAt = useRef(Date.now());
+
+  // remember the last avatar used for the demo
+  useEffect(() => {
+    const saved = localStorage.getItem(PICK_KEY);
+    if (saved) setAvatarId(saved);
+  }, []);
+  function pick(id: string) {
+    localStorage.setItem(PICK_KEY, id);
+    setAvatarId(id);
+  }
 
   useEffect(() => {
     let alive = true;
@@ -46,7 +60,15 @@ function SelfHosted() {
     };
   }, []);
 
-  if (studio === "ready") return <FoxDailyCall avatarId="fox_ditto" />;
+  if (studio === "ready") {
+    return (
+      <>
+        {/* keyed: switching avatars restarts the call on the new face */}
+        <FoxDailyCall key={avatarId} avatarId={avatarId} />
+        <FoxAvatarPicker current={avatarId} onPick={pick} />
+      </>
+    );
+  }
 
   return (
     <div
