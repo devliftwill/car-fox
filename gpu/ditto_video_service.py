@@ -1,0 +1,588 @@
+"""carfox DittoVideoService — our own avatar engine as a Pipecat video service.
+
+Pattern-matched to pipecat.services.simli.video.SimliVideoService, but the
+engine is local: Ditto (Ant Group) running on this box's A100.
+
+Audio contract: consumes the bot's TTS/S2S audio (TTSAudioRawFrame, any rate),
+resamples to 16k, and feeds the SDK a CONTINUOUS 16k stream (silence when the
+bot isn't speaking → natural idle motion, and the pipeline stays primed).
+Emits paired OutputImageRawFrame (512² RGB) + TTSAudioRawFrame (16k) batches;
+the output transport does all pacing and A/V sync.
+"""
+
+import asyncio
+import os
+import queue
+import sys
+import threading
+from collections import deque
+
+import numpy as np
+import cv2
+from loguru import logger
+
+from pipecat.frames.frames import (
+    CancelFrame,
+    EndFrame,
+    Frame,
+    InterruptionFrame,
+    OutputImageRawFrame,
+    StartFrame,
+    TTSAudioRawFrame,
+    TTSStoppedFrame,
+    UserStartedSpeakingFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.ai_service import AIService
+
+from av.audio.frame import AudioFrame
+from av.audio.resampler import AudioResampler
+
+DITTO_ROOT = os.environ.get("DITTO_ROOT", os.path.expanduser("~/ditto-talkinghead"))
+if DITTO_ROOT not in sys.path:
+    sys.path.insert(0, DITTO_ROOT)
+
+CHUNK_FRAMES = (3, 5, 2)
+WINDOW = 640 * sum(CHUNK_FRAMES)   # 6400 samples @16k
+HOP = 640 * CHUNK_FRAMES[1]        # 3200 samples = 200ms = 5 video frames
+
+_sdk = None
+_sdk_lock = threading.Lock()
+_active_owner = None  # the service instance currently driving the SDK
+
+
+def get_sdk():
+    """Load the Ditto StreamSDK once per process (models ~30s)."""
+    global _sdk
+    with _sdk_lock:
+        if _sdk is None:
+            from stream_pipeline_online import StreamSDK
+
+            class BridgedSDK(StreamSDK):
+                def bridge_reset(self):
+                    self.frame_out = queue.Queue()
+                    self.frames_written = 0
+
+                def _writer_worker(self):
+                    while not self.stop_event.is_set():
+                        try:
+                            item = self.writer_queue.get(timeout=1)
+                        except queue.Empty:
+                            continue
+                        if item is None:
+                            break
+                        # index every frame: warmup output arrives LATE (the GPU
+                        # workers run behind run_chunk), so it can only be
+                        # separated from session output by count, not by drain.
+                        self.frame_out.put((self.frames_written, item))
+                        self.frames_written += 1
+
+            _sdk = BridgedSDK(
+                os.path.join(DITTO_ROOT, "checkpoints/ditto_cfg/v0.4_hubert_cfg_pytorch.pkl"),
+                os.path.join(DITTO_ROOT, "checkpoints/ditto_pytorch"),
+            )
+            logger.info("ditto-pipecat: StreamSDK loaded")
+    return _sdk
+
+
+class DittoVideoService(AIService):
+    def __init__(self, *, source_path: str, **kwargs):
+        super().__init__(**kwargs)
+        self._source_path = source_path
+        self._resampler = AudioResampler("s16", "mono", 16000)
+        self._speech = deque()          # pending 16k s16 speech bytes
+        self._speech_lock = threading.Lock()
+        self._feeder_thread_h = None
+        self._emitter_thread_h = None
+        self._emitter_task = None
+        self._boot_task = None
+        self._stopping = False
+        # direct-to-device audio (Daily): emitter fills, writer thread drains.
+        # Audio written through the pipeline (ANY chunking/pacing) makes
+        # daily-python discard all video; a plain-thread device writer — the
+        # bare-probe pattern — coexists with video perfectly.
+        self._audio_sink_getter = None
+        self._audio_out = deque()  # (audio_bytes|None, [frame_bytes x5]|None) per hop
+        self._ledger = deque()     # fed window k -> (audio_bytes, is_speech)
+        self._base = 0             # writer frame index where real output begins
+        self._frame_setter = None  # Daily path: writer clocks frames to audio
+        self._last_speech_t = 0.0  # feeder: last time a speech hop was fed
+        self._last_audio_t = 0.0   # feeder: last time Gemini audio arrived
+
+    def set_audio_sink_getter(self, getter):
+        """Daily path: write audio straight to the mic device from a thread."""
+        self._audio_sink_getter = getter
+        threading.Thread(target=self._audio_writer_thread, daemon=True).start()
+
+    def _audio_writer_thread(self):
+        """Master A/V clock (Daily path): every 40ms tick writes one audio
+        slice AND publishes the frame generated for exactly that 40ms —
+        lip-sync holds by construction, at playback time, regardless of how
+        far ahead the GPU runs."""
+        import time as _time
+        slice_bytes = HOP * 2 // 5          # 40ms of s16 @ 16k
+        silence = b"\x00" * slice_bytes
+        pending = deque()                    # (audio_slice, frame_bytes|None)
+        deadline = _time.perf_counter()
+        sink = None
+        while not self._stopping:
+            if sink is None:
+                sink = self._audio_sink_getter() if self._audio_sink_getter else None
+                if sink is None:
+                    _time.sleep(0.1)
+                    deadline = _time.perf_counter()
+                    continue
+            # CUSHION: eagerly drain every ready window into `pending`. The
+            # engine emits ~70 frames in a burst then pauses; pulling one
+            # window at a time let playback starve between bursts (~50% of the
+            # voice went to silence). Draining the whole burst into pending and
+            # pre-rolling ~1s of it means the gaps between bursts are already
+            # buffered — continuous audio, continuous lips.
+            if not pending and self._audio_out:
+                # Skip stale IDLE windows (audio=None) when the queue runs deep
+                # so a reply never waits behind buffered idle; speech is never
+                # skipped. Then expand one window into 5 aligned 40ms ticks.
+                audio, frames = self._audio_out.popleft()
+                while audio is None and len(self._audio_out) > 3:
+                    audio, frames = self._audio_out.popleft()
+                for j in range(5):
+                    pending.append((
+                        audio[j * slice_bytes : (j + 1) * slice_bytes] if audio else silence,
+                        frames[j] if frames else None,
+                    ))
+            piece, fb = pending.popleft() if pending else (silence, None)
+            # audio sits ~200ms deeper in the playout chain (mic buffer +
+            # jitter buffer) than video — delay frame publishing a few ticks
+            # so lips land ON the voice, not ahead of it (measured -200ms)
+            if not hasattr(self, "_fb_delay"):
+                self._fb_delay = deque()
+                self._fb_ticks = int(os.environ.get("FOX_AV_OFFSET_TICKS", "5"))
+                self._last_pub = None
+                self._rec = [] if os.environ.get("FOX_RECORD") == "1" else None
+            self._fb_delay.append(fb)
+            fb_now = self._fb_delay.popleft() if len(self._fb_delay) > self._fb_ticks else None
+            if fb_now is not None:
+                self._last_pub = fb_now
+            try:
+                sink.write_frames(piece)
+                if fb_now is not None and self._frame_setter is not None:
+                    self._frame_setter(fb_now)
+                self._awrites = getattr(self, "_awrites", 0) + 1
+                if self._awrites % 500 == 1:
+                    logger.info(f"ditto-pipecat: audio device writes {self._awrites}")
+                # GROUND-TRUTH RECORDING: exactly what is transmitted this
+                # 40ms tick — the audio slice + the frame on screen with it.
+                if self._rec is not None and len(self._rec) < 900:
+                    self._rec.append((piece, self._last_pub))
+                    if len(self._rec) == 900:
+                        self._flush_recording()
+            except Exception:
+                logger.exception("ditto-pipecat: AUDIO WRITER DIED")
+                return
+            deadline += 0.04
+            rest = deadline - _time.perf_counter()
+            if rest > 0:
+                _time.sleep(rest)
+            elif rest < -1.0:
+                deadline = _time.perf_counter()
+
+    def _flush_recording(self):
+        """Mux the tick-aligned (audio, on-screen-frame) log into an mp4 —
+        exactly the A/V relationship transmitted. FOX_RECORD=1 only."""
+        import subprocess
+        try:
+            black = b"\x00" * (512 * 512 * 3)
+            with open("/tmp/fox_rec_audio.raw", "wb") as fa, open("/tmp/fox_rec_video.raw", "wb") as fv:
+                for piece, frame in self._rec:
+                    fa.write(piece)
+                    fv.write(frame if frame is not None else black)
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "/tmp/fox_rec_audio.raw",
+                "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "512x512", "-r", "25", "-i", "/tmp/fox_rec_video.raw",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+                "/tmp/fox_rec.mp4",
+            ], check=True, capture_output=True)
+            logger.info(f"ditto-pipecat: RECORDING flushed -> /tmp/fox_rec.mp4 ({len(self._rec)} ticks)")
+        except Exception:
+            logger.exception("ditto-pipecat: recording flush failed")
+        self._rec = None
+
+    async def start(self, frame: StartFrame):
+        await super().start(frame)
+        # NON-BLOCKING boot: StartFrame must reach the transport within
+        # ~seconds of the room join or Daily's announced-but-frameless
+        # camera track goes permanently dormant (the root cause of the
+        # one-keyframe-then-black calls). The pacer downstream streams the
+        # avatar's still photo while the engine primes here in the background.
+        if self._boot_task is None:
+            self._boot_task = asyncio.create_task(self._boot())
+
+    async def _boot(self):
+        sdk = get_sdk()
+        loop = asyncio.get_running_loop()
+
+        def _setup():
+            if hasattr(sdk, "stop_event"):
+                try:
+                    sdk.stop_event.set()
+                    for t in getattr(sdk, "thread_list", []):
+                        t.join(timeout=4)
+                except Exception as e:
+                    logger.warning(f"ditto-pipecat: prev teardown: {e}")
+            try:
+                sdk.stop_event.clear()  # a set flag from the previous
+                # session's teardown makes the fresh workers exit after a
+                # few batches (burn stalls, fox goes silent)
+            except Exception:
+                pass
+            sdk.bridge_reset()
+            sdk.setup(
+                self._source_path,
+                "/tmp/ditto_pipecat_unused.mp4",
+                online_mode=True,
+                sampling_timesteps=int(os.environ.get("DITTO_STEPS", "10")),
+                max_size=1024,
+                # Emit motion clips more often (valid_clip_len = 80 - overlap).
+                # Measured: overlap 10 -> the engine holds ~145 frames (5.8s)
+                # in flight; overlap 50 -> ~70 frames (2.8s), i.e. ~3s off
+                # every reply, at no throughput cost (24.9 vs 24.8 fps).
+                overlap_v2=int(os.environ.get("FOX_OVERLAP", "50")),
+            )
+            # PRIME THE WARMUP HERE, behind the connection loader. The diffusion
+            # needs ~30 windows (~6s of audio) before it emits its first frame;
+            # if that happens live it buries the greeting. Feed silence at
+            # GPU-max now and discard the warmup output, so once the real
+            # session starts, output flows within one burst (~2-3s) instead.
+            warm_windows = int(os.environ.get("FOX_WARM_WINDOWS", "45"))
+            dummy = np.zeros(WINDOW, dtype=np.float32)
+            for _ in range(warm_windows):
+                if self._stopping:
+                    return
+                sdk.run_chunk(dummy, chunksize=CHUNK_FRAMES)
+            # These windows WILL each yield exactly 5 frames, but arrive late.
+            # Skip them by index so session audio pairs with session frames —
+            # draining here can't work (output only flows under input pressure)
+            # and leaving them unpaired shifts every lip against its voice.
+            self._skip = warm_windows * CHUNK_FRAMES[1]
+            logger.info(
+                f"ditto-pipecat: warmup primed ({warm_windows} windows); "
+                f"skipping frame indices <{self._skip}"
+            )
+
+        global _active_owner
+        _active_owner = self
+        try:
+            await loop.run_in_executor(None, _setup)
+        except Exception:
+            logger.exception("ditto-pipecat: ENGINE BOOT FAILED")
+            return
+        if self._stopping:
+            return
+        logger.info(f"ditto-pipecat: avatar ready ({self._source_path})")
+        self._feeder_thread_h = threading.Thread(target=self._feeder_thread, args=(sdk,), daemon=True)
+        self._feeder_thread_h.start()
+        self._emitter_thread_h = threading.Thread(target=self._emitter_thread, args=(sdk,), daemon=True)
+        self._emitter_thread_h.start()
+
+    async def stop(self, frame: EndFrame):
+        await super().stop(frame)
+        await self._shutdown()
+
+    async def cancel(self, frame: CancelFrame):
+        await super().cancel(frame)
+        await self._shutdown()
+
+    async def _shutdown(self):
+        self._stopping = True
+        if self._boot_task is not None and not self._boot_task.done():
+            self._boot_task.cancel()
+        sdk = get_sdk()
+        # Only tear down SDK workers if WE still own them — a newer session
+        # may have already re-setup the shared SDK (cancel/teardown race).
+        if _active_owner is self:
+            try:
+                sdk.stop_event.set()
+            except Exception:
+                pass
+        # emitter is a daemon thread now; it exits when _stopping is set
+
+    # ---- engine drive ----------------------------------------------------
+
+    def _feeder_thread(self, sdk):
+        """Dedicated generation thread: its own metronome, blocking GPU calls,
+        zero asyncio contention. One 200ms hop per 200ms of wall time — the
+        GPU work happens INSIDE the budget, sleep covers the remainder."""
+        import time as _time
+        buf = np.zeros(0, dtype=np.float32)
+        self._ledger = deque()
+        deadline = _time.perf_counter()
+        while not self._stopping:
+            # Drain ALL pending Gemini audio into buf at once (not one chunk
+            # per tick) so an utterance stays contiguous — the previous
+            # one-chunk-per-tick pull left micro-gaps that got played as
+            # silence, shredding the voice.
+            with self._speech_lock:
+                chunks = list(self._speech)
+                self._speech.clear()
+            if chunks:
+                self._last_audio_t = _time.perf_counter()
+                joined = b"".join(chunks)
+                buf = np.concatenate(
+                    [buf, np.frombuffer(joined, dtype=np.int16).astype(np.float32) / 32768.0]
+                )
+            # NEVER pad silence mid-utterance. Gemini streams speech in small
+            # 20-100ms chunks, so the buffer is often short of a full 400ms
+            # window while the fox is still talking. Padding to complete the
+            # window injected whole 200ms silence hops INTO sentences —
+            # measured as quiet runs of exactly 5 frames (1 hop) covering ~50%
+            # of the greeting, vs 17% natural pauses in reference speech. It
+            # shredded the voice AND made the engine draw a closed mouth on
+            # those hops. Wait for the rest of the utterance; only once audio
+            # has genuinely stopped for 400ms do we feed idle silence (which
+            # keeps the face alive and flushes the tail).
+            if len(buf) < WINDOW:
+                if _time.perf_counter() - self._last_audio_t < 0.4:
+                    _time.sleep(0.01)
+                    continue
+                buf = np.concatenate([buf, np.zeros(HOP, dtype=np.float32)])
+            fed = False
+            while len(buf) >= WINDOW and not self._stopping:
+                hop = buf[:HOP]
+                window = buf[:WINDOW].copy()
+                buf = buf[HOP:]
+                # is_speech from the ACTUAL samples, not from packet arrival —
+                # this is what decides droppability, and mislabeling real
+                # speech as silence was letting it get dropped/silenced.
+                is_speech = float(np.sqrt(np.mean(hop * hop))) > 0.01
+                if is_speech:
+                    self._last_speech_t = _time.perf_counter()
+                self._ledger.append(((hop * 32767).astype(np.int16).tobytes(), is_speech))
+                t0 = _time.perf_counter()
+                sdk.run_chunk(window, chunksize=CHUNK_FRAMES)  # blocking; CUDA releases the GIL
+                dt = _time.perf_counter() - t0
+                self._hop_ms = getattr(self, "_hop_ms", 0.0) * 0.9 + dt * 1000 * 0.1
+                self._hops = getattr(self, "_hops", 0) + 1
+                if self._hops % 50 == 1:
+                    logger.info(
+                        f"ditto-pipecat: gen pace {self._hop_ms:.0f}ms/200ms hop, ledger={len(self._ledger)}"
+                    )
+                fed = True
+                # Feed at realtime. (Feeding faster only helps if the consumer
+                # can drain faster; with the emitter now on its own thread it
+                # sustains realtime, and realtime-in keeps the ledger bounded.)
+                deadline += 0.2
+                rest = deadline - _time.perf_counter()
+                if rest > 0:
+                    _time.sleep(rest)
+                elif rest < -1.0:
+                    deadline = _time.perf_counter()
+            if not fed:
+                _time.sleep(0.02)
+                deadline = _time.perf_counter()
+
+    def _to_bytes(self, frames5):
+        out = []
+        for f in frames5:
+            img = f if f.shape[2] == 3 else f[:, :, :3]
+            if img.shape[:2] != (512, 512):
+                img = cv2.resize(img, (512, 512))
+            out.append(np.ascontiguousarray(img).tobytes())
+        return out
+
+    def _emitter_thread(self, sdk):
+        """Dedicated thread (NOT the event loop). Pairs each finished 5-frame
+        batch with its audio window (strict FIFO, probe-verified: the engine
+        never drops or reorders), sheds idle backlog pairing-safely, and hands
+        (audio, frames) to the audio-writer. Runs off the event loop because
+        as an async task it was starved by the Daily transport + Gemini socket
+        and could not keep pace with the engine -> unbounded backlog -> the
+        greeting buried tens of seconds deep. A plain thread sustains the full
+        output rate, so the ledger stays near TARGET and latency stays low."""
+        TARGET = int(os.environ.get("FOX_LEDGER_TARGET", "6"))
+        try:
+            while not self._stopping:
+                # block for one batch (5 frames)
+                frames5 = []
+                while not self._stopping:
+                    try:
+                        idx, fr = sdk.frame_out.get(timeout=1)
+                    except queue.Empty:
+                        continue
+                    if idx < getattr(self, "_skip", 0):
+                        continue  # warmup frame — no session audio belongs to it
+                    frames5.append(fr)
+                    if len(frames5) == CHUNK_FRAMES[1]:
+                        break
+                if self._stopping:
+                    return
+                hop, is_sp = self._ledger.popleft() if self._ledger else (b"\x00" * HOP * 2, False)
+                if not getattr(self, "_primed", False):
+                    # Mark primed on the FIRST batch of any kind. Gating this on
+                    # a speech batch deadlocked the greeting: the greeting waits
+                    # for primed, but speech only exists after the greeting, so
+                    # it only ever fired via the 25s fallback.
+                    self._primed = True
+                    logger.info(f"ditto-pipecat: frames flowing (target depth {TARGET})")
+                # PAIRING-SAFE CATCH-UP DRAIN: when deep, drop this silence pair
+                # and rapidly sweep further buffered silence pairs (5 frames + 1
+                # ledger each, always together) so pairing never shifts and only
+                # silence is ever lost. Now that this runs on its own thread the
+                # sweep actually keeps up with the engine.
+                if len(self._ledger) > TARGET and not is_sp:
+                    # Shed idle latency: this silence window's audio is dropped
+                    # (it carries no words) but its FRAMES are still shown, so
+                    # the face keeps breathing/blinking instead of freezing.
+                    # audio=None marks it skippable in the writer.
+                    self._audio_out.append((None, self._to_bytes(frames5)))
+                    continue
+                self._recv_batches = getattr(self, "_recv_batches", 0) + 1
+                if self._recv_batches % 100 == 0:
+                    logger.info(
+                        f"ditto-pipecat: batch {self._recv_batches}, ledger={len(self._ledger)}, avq={len(self._audio_out)}"
+                    )
+                # Daily path: hand the writer this window's REAL audio + frames.
+                # (SmallWebRTC fallback is not driven from this thread.)
+                self._audio_out.append((hop, self._to_bytes(frames5)))
+        except Exception:
+            logger.exception("ditto-pipecat: EMITTER THREAD DIED")
+
+    # ---- pipecat plumbing ------------------------------------------------
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if "AudioRawFrame" in type(frame).__name__ and not isinstance(frame, TTSAudioRawFrame):
+            if not getattr(self, "_odd_audio_logged", False):
+                self._odd_audio_logged = True
+                logger.warning(f"ditto-pipecat: NON-TTS audio frame passing through: {type(frame).__name__}")
+        if isinstance(frame, TTSAudioRawFrame):
+            try:
+                af = AudioFrame.from_ndarray(
+                    np.frombuffer(frame.audio, dtype=np.int16)[None, :],
+                    layout="mono" if frame.num_channels == 1 else "stereo",
+                )
+                af.sample_rate = frame.sample_rate
+                for rf in self._resampler.resample(af):
+                    with self._speech_lock:
+                        self._speech.append(rf.to_ndarray().astype(np.int16).tobytes())
+            except Exception as e:
+                await self.push_error(error_msg=f"ditto audio in: {e}", exception=e)
+            return  # engine audio comes back out paired with video
+        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
+            with self._speech_lock:
+                self._speech.clear()
+            if hasattr(self, "_ledger"):
+                # mark queued speech hops as droppable silence
+                self._ledger = deque(((h, False) for h, _ in self._ledger))
+        if isinstance(frame, TTSStoppedFrame):
+            return
+        await self.push_frame(frame, direction)
+
+
+class FramePacer(FrameProcessor):
+    """Re-clock video frames to a rock-steady cadence for Daily.
+
+    daily-python's libwebrtc encoder stops producing packets when frames
+    arrive with jittery or stalling timing (a bare 25fps metronome probe
+    streamed perfectly while the pipeline's bursty supply froze after the
+    first keyframe). This holds the newest OutputImageRawFrame and re-emits
+    on a strict metronome, repeating the last image through gaps so the
+    encoder never starves — which also keeps idle video continuous.
+    """
+
+    def __init__(self, fps: int = 25, initial_image_path: str | None = None, sink_getter=None):
+        super().__init__()
+        self._period = 1.0 / fps
+        self._latest = None
+        self._metronome_task = None
+        self._initial_image_path = initial_image_path
+        # Daily path: write frames straight to the camera device from a
+        # plain thread. Event-loop-driven video writes are discarded by
+        # daily-python whenever ANY audio is being written; thread-driven
+        # writes (the bare-probe pattern) stream perfectly alongside audio.
+        self._sink_getter = sink_getter
+        self._writer_stop = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            await self.push_frame(frame, direction)
+            # seed with the avatar's still photo so the camera track carries
+            # frames from the very first moment (a track that stays empty
+            # for the ~15s engine prime never wakes Daily's encoder), and
+            # the user sees the fox instantly instead of black
+            if self._latest is None and self._initial_image_path:
+                img = cv2.imread(self._initial_image_path)
+                if img is not None:
+                    img = cv2.resize(img, (512, 512))
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    self._latest = (np.ascontiguousarray(img).tobytes(), (512, 512), "RGB")
+            if self._sink_getter is not None:
+                if self._metronome_task is None:
+                    self._metronome_task = True
+                    threading.Thread(target=self._writer_thread, daemon=True).start()
+            elif self._metronome_task is None:
+                self._metronome_task = asyncio.create_task(self._metronome())
+            return
+        if isinstance(frame, (EndFrame, CancelFrame)):
+            self._writer_stop = True
+            if self._metronome_task is not None and self._metronome_task is not True:
+                self._metronome_task.cancel()
+            self._metronome_task = None
+            await self.push_frame(frame, direction)
+            return
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, OutputImageRawFrame):
+            self._latest = (frame.image, frame.size, frame.format)  # swallowed; the metronome re-emits
+            return
+        await self.push_frame(frame, direction)
+
+    def _writer_thread(self):
+        import time as _time
+
+        deadline = _time.perf_counter()
+        sink = None
+        while not self._writer_stop:
+            if sink is None:
+                sink = self._sink_getter() if self._sink_getter else None
+                if sink is None:
+                    _time.sleep(0.1)
+                    deadline = _time.perf_counter()
+                    continue
+                logger.info(f"ditto-pipecat: video sink resolved: {type(sink).__name__}")
+            if self._latest is not None:
+                img, _size, _fmt = self._latest
+                try:
+                    sink.write_frame(img)
+                    self._writes = getattr(self, "_writes", 0) + 1
+                    if self._writes % 250 == 1:
+                        logger.info(f"ditto-pipecat: video device writes {self._writes}")
+                except Exception:
+                    logger.exception("ditto-pipecat: VIDEO WRITER DIED")
+                    return
+            deadline += self._period
+            rest = deadline - _time.perf_counter()
+            if rest > 0:
+                _time.sleep(rest)
+            elif rest < -1.0:
+                deadline = _time.perf_counter()
+
+    async def _metronome(self):
+        import time as _time
+
+        deadline = _time.monotonic()
+        try:
+            while True:
+                if self._latest is not None:
+                    img, size, fmt = self._latest
+                    # a FRESH frame object every tick — pipecat frames carry
+                    # identity, and re-pushing one instance delivers exactly
+                    # one image downstream (the one-keyframe-then-black bug)
+                    await self.push_frame(OutputImageRawFrame(image=img, size=size, format=fmt))
+                deadline += self._period
+                delay = deadline - _time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                else:
+                    deadline = _time.monotonic()
+        except asyncio.CancelledError:
+            pass
