@@ -31,18 +31,46 @@ do the decoder's post-processing on the GPU, and reuse the source tensor
 Result: **~25.2 fps sustained**, deficit bounded (oscillates 125–151 frames
 instead of climbing), so latency is now constant instead of compounding.
 
+## Where the time actually goes — profile before optimizing
+
+`py-spy dump --pid <probe>` settles this in seconds, and it has now twice
+contradicted what looked obvious:
+
+1. First profile: main thread stuck in `onnxruntime` running the hubert audio
+   features **on CPU** (the CPU wheel was shadowing `onnxruntime-gpu`).
+2. Second profile, after that fix: **every render stage idle** on an empty
+   queue, and `audio2motion` — the LMDM diffusion — the only busy worker, with
+   the GPU at 48%. The render path was never the ceiling. Diffusion was.
+
+The win that followed: `guided_forward` ran two sequential transformer passes
+per ddim step (unconditional + conditioned, classifier-free guidance). They are
+independent, so `patch_cfg_batch.py` stacks them on the batch axis — same
+weights, same inputs, half the kernel launches. Verified identical on real
+inputs with `DITTO_CFG_VERIFY=1`: max relative difference **2e-7**, i.e. fp32
+rounding. That alone took overlap 60 from "23.9 fps, deficit climbing" to
+"25.0 fps, deficit flat at 40" and ~1s off every reply.
+
 ## What is NOT a throughput lever (measured, stop trying these)
 
 - **`DITTO_STEPS`.** Steps 8, 9 and 10 produce *byte-identical* frame counts in
-  `rate_probe.py`. Diffusion is nowhere near the limiter — the per-frame render
-  path is. Steps is a pure quality knob, which is also why `DITTO_STEPS=3` held
-  framerate while freezing the face. Leave it at 10.
-- **Making a stage faster, generally.** `deficit` in `rate_probe.py` is standing
-  *fill*, not a shortfall — the probe feeds at realtime and production matches
-  it. Shrinking a stage's cost does not shrink the window the model must fill.
-  Three separate wins (hubert to CUDA, cached putback mask, buffer reuse) each
-  moved steady-state production by <1%. Use `FOX_OVERLAP` for latency; use
-  throughput work only to buy headroom for a lower overlap.
+  `rate_probe.py` at overlap 50 — production is capped by the realtime feed, so
+  spare diffusion speed is invisible there. It is a quality knob, which is why
+  `DITTO_STEPS=3` held framerate while freezing the face. Leave it at 10.
+- **`torch.compile`** on the warp/decoder nets: produced **zero frames in 60s**
+  — the compile never finished. Unusable on a wake-on-demand box regardless.
+- **`cudnn.benchmark = True`**: **halves** throughput (25.0 -> 12.4 fps). Batch
+  sizes vary (8 plus a short tail), so it re-autotunes on every new shape.
+- **Bigger batches** (16 vs 8): no change.
+- **Making a *render* stage faster, generally.** `deficit` in `rate_probe.py` is
+  standing *fill*, not a shortfall — the probe feeds at realtime and production
+  matches it. Three wins there (hubert to CUDA, cached putback mask, buffer
+  reuse) each moved steady-state production by <1%. Latency comes from
+  `FOX_OVERLAP`; throughput work only matters as headroom to lower it.
+
+⚠️ `core/models/{warp_network,decoder}.py` have `.orig` backups that predate the
+*batching* patches. Restoring them silently removes the `.batch()` methods the
+patched pipeline calls, and throughput collapses. Re-run `patch_decoder.py`,
+`patch_batch_decode.py`, `patch_batch_warp.py` after any revert.
 - **`onnxruntime` packaging is still worth keeping correct**: the CPU wheel
   shadows `onnxruntime-gpu` and silently forces CPU execution. Verify with
   `ort.InferenceSession(...).get_providers()` — it must list
@@ -54,19 +82,21 @@ instead of climbing), so latency is now constant instead of compounding.
 
     GEMINI_API_KEY=...        DAILY_API_KEY=...
     DITTO_WARP_BATCH=4        DITTO_DECODE_BATCH=4
-    FOX_OVERLAP=50            # motion-clip granularity; valid_clip = 80-overlap.
-                              # This is the ONLY real latency knob: it sets how
-                              # much pipeline has to fill before a frame comes
-                              # out. Measured fill: overlap 40 = 80 frames
-                              # (3.2s), 50 = 60 frames (2.4s), 60 = 95 and
-                              # CLIMBING at 23.9 fps (cannot sustain realtime).
-                              # History: 50 used to compound (7.4->8.7->10.6s)
-                              # and this file said never raise it. That was
-                              # true BEFORE the render path got fast enough
-                              # (batching + hubert on GPU + putback cache). Now
-                              # 50 holds 4 turns at 5.55/5.47/5.35/5.44s with
-                              # +0.0s growth and 40 measures WORSE. Do not go to
-                              # 60 without first making the render path faster.
+    FOX_OVERLAP=60            # motion-clip granularity; valid_clip = 80-overlap.
+                              # The ONLY real latency knob: it sets how much
+                              # pipeline must fill before a frame comes out.
+                              # Measured fill, all at DITTO_STEPS=10:
+                              #   40 -> 80 frames (3.2s)
+                              #   50 -> 60 frames (2.4s)
+                              #   60 -> 40 frames (1.6s)   <- shipped
+                              #   65 -> 36 frames, but replies DRIFT upward
+                              #         (4.54/4.86/5.46/5.55 over 4 turns)
+                              #   70 -> 130 and climbing, 22.3 fps. Dead.
+                              # 60 only became reachable once CFG was batched
+                              # (see patch_cfg_batch.py); before that it ran
+                              # 23.9 fps with the deficit climbing 71->81->95.
+                              # Raising this requires making diffusion faster
+                              # FIRST, then re-running the multi-turn gate.
     FOX_LEDGER_TARGET=6       FOX_WARM_WINDOWS=0
     FOX_AV_OFFSET_TICKS=0     FOX_RECORD=0   # 1 = dump /tmp/fox_rec.mp4
     FOX_SPEECH_HANG=2         # speech hangover in windows (400ms). At 10 (2s)
