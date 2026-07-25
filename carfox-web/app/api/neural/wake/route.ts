@@ -53,10 +53,17 @@ async function gcpAccessToken(): Promise<string> {
   return j.access_token;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // `?for=pipecat` waits on the self-hosted character bot (:8012 via the
+  // :8010 proxy) rather than the MuseTalk server. They boot independently, so
+  // reporting "ready" off the wrong one sends the client into a call that
+  // can't be answered yet.
+  const forPipecat = new URL(req.url).searchParams.get("for") === "pipecat";
+  const probe = forPipecat ? `${NEURAL}/pipecat/health` : `${NEURAL}/api/avatar/list`;
+
   // Fast path: server already answering?
   try {
-    const r = await fetch(`${NEURAL}/api/avatar/list`, { signal: AbortSignal.timeout(2500) });
+    const r = await fetch(probe, { signal: AbortSignal.timeout(2500) });
     if (r.ok) return NextResponse.json({ status: "ready" });
   } catch {}
 
