@@ -40,6 +40,31 @@ instead of climbing), so latency is now constant instead of compounding.
     FOX_LEDGER_TARGET=6       FOX_WARM_WINDOWS=0
     FOX_AV_OFFSET_TICKS=0     FOX_RECORD=0   # 1 = dump /tmp/fox_rec.mp4
 
+## Verify before you ship: `acceptance_test.py`
+
+    cd ~/fox-pipecat && python acceptance_test.py     # 8 checks, non-zero exit on failure
+
+Joins a real Daily room headlessly, speaks a question, and grades the media:
+greeting, reply, latency, voice continuity, frozen-face, mouth articulation,
+fps. Validated against a known-bad build (`DITTO_STEPS=3`) — it fails on mouth
+articulation, and note the frozen-frame check CANNOT see that regression
+because WebRTC compression makes every frame differ slightly.
+
+## Measured audio facts (stop re-litigating these)
+
+- **Gemini's TTS is band-limited at the source**: 99.8% of energy below 4kHz,
+  0.03% above 8kHz. No playout change can add fidelity that isn't there.
+- The remaining short silences inside speech (~0.5/s) are **Gemini's own**
+  (measured pre-pipeline with `FOX_RECORD_RAW=1`); a human recording is 0.10/s
+  and the client hears 0.46-1.04/s. Our path is ~transparent.
+- Playout runs at `FOX_PLAY_SR` (24000 = Gemini's native rate). 16k is used
+  ONLY to drive the lip model, derived through one continuous resampler so the
+  audio heard and the frames shown cannot drift apart.
+- Voice/latency trade-off, both measured through the gate:
+  `FOX_GEMINI_MODEL=models/gemini-3.1-flash-live-preview` -> reply ~7.9s,
+  4-8kHz share 0.33%; `...gemini-2.5-flash-native-audio-preview-12-2025` ->
+  4.3x more 4-8kHz energy (brighter voice) but reply ~15s (fails the gate).
+
 ## Measuring it honestly
 
 `FOX_RECORD=1` makes the bridge mux exactly what it transmits — each 40ms audio

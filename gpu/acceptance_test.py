@@ -33,8 +33,11 @@ QUESTION_WAV = os.environ.get(
     "FOX_QUESTION_WAV", os.path.expanduser("~/fox-pipecat/test-question.wav")
 )
 AVATAR = os.environ.get("FOX_TEST_AVATAR", "fox_ditto")
-SR = 16000
-TICK = 320  # 20ms at 16k
+SR = 16000                                    # our mic (question playback)
+TICK = 320                                    # 20ms at 16k
+# Capture at the fox's real playout rate so fidelity can be verified. If we
+# captured at 16k we could not tell full-band 24k audio from a 16k downsample.
+SPK_SR = int(os.environ.get("FOX_PLAY_SR", "24000"))
 
 # ---- thresholds (measured baselines with margin; tighten as we improve) -----
 LIMITS = {
@@ -54,6 +57,11 @@ LIMITS = {
     "mouth_openness_std_min": 4.0,
     "video_fps_min": 20.0,
     "reply_latency_s_max": 12.0,
+    # NOTE: no high-frequency floor. MEASURED: Gemini's TTS puts 99.77% of its
+    # energy below 4kHz and 0.03% above 8kHz -- it is band-limited at the
+    # source, so no playout path can produce high-frequency content and such a
+    # check could never pass. hf_energy_above_8k is still REPORTED below as a
+    # diagnostic when comparing voices/models.
 }
 
 
@@ -69,7 +77,20 @@ def load_question():
     return a
 
 
-def rms_frames(pcm, frame=int(SR * 0.04)):
+def hf_energy_ratio(pcm, sr, s_frame, e_frame):
+    """Share of spectral energy above 8kHz during speech."""
+    a = pcm[int(s_frame * 0.04 * sr) : int(e_frame * 0.04 * sr)].astype(np.float32)
+    if len(a) < 2048 or sr <= 16000:
+        return 0.0
+    spec = np.abs(np.fft.rfft(a * np.hanning(len(a))))
+    freqs = np.fft.rfftfreq(len(a), 1.0 / sr)
+    total = float((spec ** 2).sum()) or 1e-9
+    return float((spec[freqs > 8000] ** 2).sum() / total)
+
+
+def rms_frames(pcm, frame=None):
+    if frame is None:
+        frame = int(SPK_SR * 0.04)
     n = len(pcm) // frame
     if n == 0:
         return np.zeros(0)
@@ -142,7 +163,7 @@ class Harness:
     def speaker_reader(self, speaker):
         while not self.stop:
             try:
-                data = speaker.read_frames(TICK)
+                data = speaker.read_frames(int(SPK_SR * 0.02))
             except Exception:
                 break
             if data:
@@ -176,7 +197,7 @@ def main():
     h = Harness()
     daily.Daily.init()
     mic = daily.Daily.create_microphone_device("test-mic", sample_rate=SR, channels=1)
-    speaker = daily.Daily.create_speaker_device("test-spk", sample_rate=SR, channels=1)
+    speaker = daily.Daily.create_speaker_device("test-spk", sample_rate=SPK_SR, channels=1)
     daily.Daily.select_speaker_device("test-spk")
     client = daily.CallClient()
 
@@ -229,7 +250,7 @@ def main():
     last = time.time()
     while time.time() - h.t0 < LIMITS["greeting_within_s"] + 15:
         time.sleep(0.1)
-        r = rms_frames(h.audio_np()[-int(SR * 0.4):])
+        r = rms_frames(h.audio_np()[-int(SPK_SR * 0.4):])
         loud = bool(len(r)) and float(r.max()) > 0.03
         now = time.time()
         if loud and greet_at is None:
@@ -292,7 +313,10 @@ def main():
             # openness proxy: dark-pixel area in the lower-central face
             open_std = float(np.std([float((g[40:80, 30:70] < 70).sum()) for g in seg]))
 
+    hf = hf_energy_ratio(pcm, SPK_SR, sp[0][0], sp[0][1]) if sp else 0.0
     m = {
+        "playout_sr": SPK_SR,
+        "hf_energy_above_8k": round(hf, 4),
         "greeting_at_s": round(greet_at, 2),
         "greeting_len_s": round(greet_len, 2),
         "reply_latency_s": round(reply_latency, 2) if reply_latency else None,

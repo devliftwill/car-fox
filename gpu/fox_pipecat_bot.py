@@ -151,8 +151,10 @@ class _DropAudio(FrameProcessor):
 def _build_pipeline(transport, source: str):
     llm = GeminiLiveLLMService(
         api_key=os.environ["GEMINI_API_KEY"],
-        # the exact model our browser voice loop conversed with for weeks
-        model="models/gemini-3.1-flash-live-preview",
+        # swappable so audio quality can be A/B'd. gemini-3.1-flash-live-preview
+        # is the low-latency dialogue model; the 2.5 native-audio preview is
+        # documented as tuned for higher-quality, more natural audio output.
+        model=os.environ.get("FOX_GEMINI_MODEL", "models/gemini-3.1-flash-live-preview"),
         voice_id="Puck",
         system_instruction=FOX_PROMPT,
         # reply reliability + snappier turns: trigger on quieter speech,
@@ -288,7 +290,8 @@ async def daily_start(body: dict):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            audio_out_sample_rate=16000,
+            # play Gemini's native rate; the 16k downsample is only for lips
+            audio_out_sample_rate=int(os.environ.get("FOX_PLAY_SR", "24000")),
             video_out_enabled=True,
             # NOT video_out_is_live: the non-live path redraws the newest
             # frame on the transport's own fixed 25fps clock, which is the

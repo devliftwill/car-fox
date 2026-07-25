@@ -43,8 +43,15 @@ if DITTO_ROOT not in sys.path:
     sys.path.insert(0, DITTO_ROOT)
 
 CHUNK_FRAMES = (3, 5, 2)
-WINDOW = 640 * sum(CHUNK_FRAMES)   # 6400 samples @16k
+WINDOW = 640 * sum(CHUNK_FRAMES)   # 6400 samples @16k  (engine context)
 HOP = 640 * CHUNK_FRAMES[1]        # 3200 samples = 200ms = 5 video frames
+# The lip model needs 16k (hubert), but Gemini speaks at 24k. Downsampling the
+# PLAYOUT to 16k threw away half the spectrum and then Daily resampled again to
+# 48k for Opus -- audibly muffled. So: 16k drives the lips, PLAY_SR is what the
+# visitor actually hears.
+PLAY_SR = int(os.environ.get("FOX_PLAY_SR", "24000"))
+HOP_P = PLAY_SR // 5               # samples of playout audio per 200ms hop
+HOP_P_BYTES = HOP_P * 2
 
 _sdk = None
 _sdk_lock = threading.Lock()
@@ -89,8 +96,13 @@ class DittoVideoService(AIService):
     def __init__(self, *, source_path: str, **kwargs):
         super().__init__(**kwargs)
         self._source_path = source_path
-        self._resampler = AudioResampler("s16", "mono", 16000)
-        self._speech = deque()          # pending 16k s16 speech bytes
+        # playout stream at PLAY_SR (what the visitor hears) and a single
+        # continuous resampler that derives the engine's 16k feed from it, so
+        # the two can never drift apart.
+        self._to_play = AudioResampler("s16", "mono", PLAY_SR)
+        self._to16 = AudioResampler("s16", "mono", 16000)
+        self._play = deque()            # pending PLAY_SR s16 bytes (playout)
+        self._speech = deque()          # kept for the SmallWebRTC fallback
         self._speech_lock = threading.Lock()
         self._feeder_thread_h = None
         self._emitter_thread_h = None
@@ -120,7 +132,7 @@ class DittoVideoService(AIService):
         lip-sync holds by construction, at playback time, regardless of how
         far ahead the GPU runs."""
         import time as _time
-        slice_bytes = HOP * 2 // 5          # 40ms of s16 @ 16k
+        slice_bytes = HOP_P_BYTES // 5      # 40ms of s16 @ PLAY_SR
         silence = b"\x00" * slice_bytes
         pending = deque()                    # (audio_slice, frame_bytes|None)
         deadline = _time.perf_counter()
@@ -341,23 +353,20 @@ class DittoVideoService(AIService):
         zero asyncio contention. One 200ms hop per 200ms of wall time — the
         GPU work happens INSIDE the budget, sleep covers the remainder."""
         import time as _time
-        buf = np.zeros(0, dtype=np.float32)
+        buf = np.zeros(0, dtype=np.float32)   # engine feed @16k
+        bufP = bytearray()                    # playout @PLAY_SR
+        pendingP = deque()                    # one playout hop per engine hop
         self._ledger = deque()
         deadline = _time.perf_counter()
         while not self._stopping:
-            # Drain ALL pending Gemini audio into buf at once (not one chunk
-            # per tick) so an utterance stays contiguous — the previous
-            # one-chunk-per-tick pull left micro-gaps that got played as
-            # silence, shredding the voice.
+            # Drain ALL pending Gemini audio at once (not one chunk per tick)
+            # so an utterance stays contiguous.
             with self._speech_lock:
-                chunks = list(self._speech)
-                self._speech.clear()
+                chunks = list(self._play)
+                self._play.clear()
             if chunks:
                 self._last_audio_t = _time.perf_counter()
-                joined = b"".join(chunks)
-                buf = np.concatenate(
-                    [buf, np.frombuffer(joined, dtype=np.int16).astype(np.float32) / 32768.0]
-                )
+                bufP.extend(b"".join(chunks))
             # NEVER pad silence mid-utterance. Gemini streams speech in small
             # 20-100ms chunks, so the buffer is often short of a full 400ms
             # window while the fox is still talking. Padding to complete the
@@ -368,11 +377,30 @@ class DittoVideoService(AIService):
             # those hops. Wait for the rest of the utterance; only once audio
             # has genuinely stopped for 400ms do we feed idle silence (which
             # keeps the face alive and flushes the tail).
+            # Convert whole playout hops into the engine's 16k stream through ONE
+            # continuous resampler: each 200ms hop yields exactly HOP samples, so
+            # the audio the visitor hears and the frames the model makes from it
+            # stay locked together by construction.
+            while len(bufP) >= HOP_P_BYTES:
+                hop_play = bytes(bufP[:HOP_P_BYTES])
+                del bufP[:HOP_P_BYTES]
+                af = AudioFrame.from_ndarray(
+                    np.frombuffer(hop_play, dtype=np.int16)[None, :], layout="mono"
+                )
+                af.sample_rate = PLAY_SR
+                for rf in self._to16.resample(af):
+                    buf = np.concatenate(
+                        [buf, rf.to_ndarray().astype(np.float32).ravel() / 32768.0]
+                    )
+                pendingP.append(hop_play)
+
             if len(buf) < WINDOW:
                 if _time.perf_counter() - self._last_audio_t < 0.4:
                     _time.sleep(0.01)
                     continue
+                # idle: pad BOTH streams so they stay duration-matched
                 buf = np.concatenate([buf, np.zeros(HOP, dtype=np.float32)])
+                pendingP.append(b"\x00" * HOP_P_BYTES)
             fed = False
             while len(buf) >= WINDOW and not self._stopping:
                 hop = buf[:HOP]
@@ -394,7 +422,8 @@ class DittoVideoService(AIService):
                 is_speech = loud or getattr(self, "_hang", 0) > 0
                 if is_speech:
                     self._last_speech_t = _time.perf_counter()
-                self._ledger.append(((hop * 32767).astype(np.int16).tobytes(), is_speech))
+                hop_out = pendingP.popleft() if pendingP else (b"\x00" * HOP_P_BYTES)
+                self._ledger.append((hop_out, is_speech))
                 t0 = _time.perf_counter()
                 sdk.run_chunk(window, chunksize=CHUNK_FRAMES)  # blocking; CUDA releases the GIL
                 dt = _time.perf_counter() - t0
@@ -453,7 +482,7 @@ class DittoVideoService(AIService):
                         break
                 if self._stopping:
                     return
-                hop, is_sp = self._ledger.popleft() if self._ledger else (b"\x00" * HOP * 2, False)
+                hop, is_sp = self._ledger.popleft() if self._ledger else (b"\x00" * HOP_P_BYTES, False)
                 if not getattr(self, "_primed", False):
                     # Mark primed on the FIRST batch of any kind. Gating this on
                     # a speech batch deadlocked the greeting: the greeting waits
@@ -493,16 +522,29 @@ class DittoVideoService(AIService):
                 self._odd_audio_logged = True
                 logger.warning(f"ditto-pipecat: NON-TTS audio frame passing through: {type(frame).__name__}")
         if isinstance(frame, TTSAudioRawFrame):
-            try:
-                af = AudioFrame.from_ndarray(
-                    np.frombuffer(frame.audio, dtype=np.int16)[None, :],
-                    layout="mono" if frame.num_channels == 1 else "stereo",
+            if not getattr(self, "_sr_logged", False):
+                self._sr_logged = True
+                logger.info(
+                    f"ditto-pipecat: Gemini audio arrives at {frame.sample_rate}Hz "
+                    f"x{frame.num_channels}ch (we resample to 16k for the lip model)"
                 )
-                af.sample_rate = frame.sample_rate
-                for rf in self._resampler.resample(af):
-                    b = rf.to_ndarray().astype(np.int16).tobytes()
+            try:
+                if frame.sample_rate == PLAY_SR and frame.num_channels == 1:
+                    # already the playout rate: pass through untouched (no loss)
+                    chunks = [frame.audio]
+                else:
+                    af = AudioFrame.from_ndarray(
+                        np.frombuffer(frame.audio, dtype=np.int16)[None, :],
+                        layout="mono" if frame.num_channels == 1 else "stereo",
+                    )
+                    af.sample_rate = frame.sample_rate
+                    chunks = [
+                        rf.to_ndarray().astype(np.int16).tobytes()
+                        for rf in self._to_play.resample(af)
+                    ]
+                for b in chunks:
                     with self._speech_lock:
-                        self._speech.append(b)
+                        self._play.append(b)
                     # FOX_RECORD_RAW=1: dump Gemini's audio exactly as it
                     # arrives (post-resample, pre-anything-of-ours) so its gap
                     # profile can be compared against what we transmit. Answers
