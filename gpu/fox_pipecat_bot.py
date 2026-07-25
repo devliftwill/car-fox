@@ -160,7 +160,7 @@ def _build_pipeline(transport, source: str):
         params=InputParams(vad=GeminiVADParams(
             start_sensitivity="START_SENSITIVITY_HIGH",
             end_sensitivity="END_SENSITIVITY_HIGH",
-            silence_duration_ms=500,
+            silence_duration_ms=int(os.environ.get("FOX_VAD_SILENCE_MS", "300")),
         )),
     )
 

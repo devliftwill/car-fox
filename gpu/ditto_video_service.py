@@ -150,7 +150,34 @@ class DittoVideoService(AIService):
                         audio[j * slice_bytes : (j + 1) * slice_bytes] if audio else silence,
                         frames[j] if frames else None,
                     ))
-            piece, fb = pending.popleft() if pending else (silence, None)
+            # JITTER CUSHION: the engine delivers ~1.2s bursts, so playing the
+            # instant a window lands leaves the buffer dry between bursts and
+            # injects 40-80ms silences MID-WORD -- audible as clicks/static
+            # (measured: quiet runs of 1-2 frames inside speech). Hold until a
+            # small cushion exists, then play continuously; on an underrun,
+            # re-cushion once rather than stuttering every burst.
+            if not hasattr(self, "_cushion"):
+                self._cushion = int(os.environ.get("FOX_CUSHION_TICKS", "6"))  # 240ms
+                self._debt = self._cushion      # build the cushion before first play
+                self._underruns = 0
+            if not pending:
+                # dry: if we were mid-stream this is an underrun -- take on debt
+                # so the queue can rebuild instead of gapping every burst.
+                if self._debt == 0:
+                    self._debt = self._cushion
+                    self._underruns += 1
+                    if self._underruns % 10 == 1:
+                        logger.info(f"ditto-pipecat: playout underrun #{self._underruns}, re-cushioning")
+                piece, fb = silence, None
+            elif self._debt > 0:
+                # hold playback (silence) while `pending` grows to the cushion.
+                # Production and playback are balanced, so a cushion only exists
+                # if we deliberately fall behind ONCE -- gating on depth alone
+                # could never accumulate it and played pure silence.
+                self._debt -= 1
+                piece, fb = silence, None
+            else:
+                piece, fb = pending.popleft()
             # audio sits ~200ms deeper in the playout chain (mic buffer +
             # jitter buffer) than video — delay frame publishing a few ticks
             # so lips land ON the voice, not ahead of it (measured -200ms)
