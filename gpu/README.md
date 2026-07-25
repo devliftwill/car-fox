@@ -31,18 +31,42 @@ do the decoder's post-processing on the GPU, and reuse the source tensor
 Result: **~25.2 fps sustained**, deficit bounded (oscillates 125–151 frames
 instead of climbing), so latency is now constant instead of compounding.
 
+## What is NOT a throughput lever (measured, stop trying these)
+
+- **`DITTO_STEPS`.** Steps 8, 9 and 10 produce *byte-identical* frame counts in
+  `rate_probe.py`. Diffusion is nowhere near the limiter — the per-frame render
+  path is. Steps is a pure quality knob, which is also why `DITTO_STEPS=3` held
+  framerate while freezing the face. Leave it at 10.
+- **Making a stage faster, generally.** `deficit` in `rate_probe.py` is standing
+  *fill*, not a shortfall — the probe feeds at realtime and production matches
+  it. Shrinking a stage's cost does not shrink the window the model must fill.
+  Three separate wins (hubert to CUDA, cached putback mask, buffer reuse) each
+  moved steady-state production by <1%. Use `FOX_OVERLAP` for latency; use
+  throughput work only to buy headroom for a lower overlap.
+- **`onnxruntime` packaging is still worth keeping correct**: the CPU wheel
+  shadows `onnxruntime-gpu` and silently forces CPU execution. Verify with
+  `ort.InferenceSession(...).get_providers()` — it must list
+  `CUDAExecutionProvider`. (Uninstalling the CPU wheel breaks the GPU one; they
+  share a directory. Reinstall with `--force-reinstall onnxruntime-gpu==1.23.2`
+  and re-pin `protobuf<7` and `sympy==1.13.1` afterwards.)
+
 ## Env (`~/fox-pipecat/.env`, not in git)
 
     GEMINI_API_KEY=...        DAILY_API_KEY=...
     DITTO_WARP_BATCH=4        DITTO_DECODE_BATCH=4
-    FOX_OVERLAP=40            # motion-clip granularity. CRITICAL: at 50 the
-                              # engine ran a few % UNDER realtime inside the
-                              # live process, so its queue crept ~200ms every 5s
-                              # and replies compounded 7.4->8.7->10.6s. At 40 the
-                              # diffusion runs less often, headroom returns, the
-                              # queue holds flat (17-21) and replies are STABLE
-                              # ~6-7s over 5 turns. Do not raise it without
-                              # re-running the multi-turn gate.
+    FOX_OVERLAP=50            # motion-clip granularity; valid_clip = 80-overlap.
+                              # This is the ONLY real latency knob: it sets how
+                              # much pipeline has to fill before a frame comes
+                              # out. Measured fill: overlap 40 = 80 frames
+                              # (3.2s), 50 = 60 frames (2.4s), 60 = 95 and
+                              # CLIMBING at 23.9 fps (cannot sustain realtime).
+                              # History: 50 used to compound (7.4->8.7->10.6s)
+                              # and this file said never raise it. That was
+                              # true BEFORE the render path got fast enough
+                              # (batching + hubert on GPU + putback cache). Now
+                              # 50 holds 4 turns at 5.55/5.47/5.35/5.44s with
+                              # +0.0s growth and 40 measures WORSE. Do not go to
+                              # 60 without first making the render path faster.
     FOX_LEDGER_TARGET=6       FOX_WARM_WINDOWS=0
     FOX_AV_OFFSET_TICKS=0     FOX_RECORD=0   # 1 = dump /tmp/fox_rec.mp4
     FOX_SPEECH_HANG=2         # speech hangover in windows (400ms). At 10 (2s)
