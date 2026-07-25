@@ -378,10 +378,20 @@ class DittoVideoService(AIService):
                 hop = buf[:HOP]
                 window = buf[:WINDOW].copy()
                 buf = buf[HOP:]
-                # is_speech from the ACTUAL samples, not from packet arrival —
-                # this is what decides droppability, and mislabeling real
-                # speech as silence was letting it get dropped/silenced.
-                is_speech = float(np.sqrt(np.mean(hop * hop))) > 0.01
+                # is_speech decides whether this window's AUDIO may be dropped
+                # downstream, so a false "silence" during real speech deletes
+                # sound while the mouth keeps moving -- the reported "avatar
+                # talking but no audio / cut off slightly". Word tails, soft
+                # consonants and inter-word pauses routinely fall under a bare
+                # amplitude test, so use a lower trigger plus HANGOVER: once an
+                # utterance starts, keep the whole thing marked as speech until
+                # it has been quiet for FOX_SPEECH_HANG windows (default 2s).
+                loud = float(np.sqrt(np.mean(hop * hop))) > 0.004
+                if loud:
+                    self._hang = int(os.environ.get("FOX_SPEECH_HANG", "10"))
+                elif getattr(self, "_hang", 0) > 0:
+                    self._hang -= 1
+                is_speech = loud or getattr(self, "_hang", 0) > 0
                 if is_speech:
                     self._last_speech_t = _time.perf_counter()
                 self._ledger.append(((hop * 32767).astype(np.int16).tobytes(), is_speech))
@@ -490,8 +500,19 @@ class DittoVideoService(AIService):
                 )
                 af.sample_rate = frame.sample_rate
                 for rf in self._resampler.resample(af):
+                    b = rf.to_ndarray().astype(np.int16).tobytes()
                     with self._speech_lock:
-                        self._speech.append(rf.to_ndarray().astype(np.int16).tobytes())
+                        self._speech.append(b)
+                    # FOX_RECORD_RAW=1: dump Gemini's audio exactly as it
+                    # arrives (post-resample, pre-anything-of-ours) so its gap
+                    # profile can be compared against what we transmit. Answers
+                    # "are the holes ours or the model's?" without guessing.
+                    if os.environ.get("FOX_RECORD_RAW") == "1":
+                        try:
+                            with open("/tmp/fox_raw_gemini.pcm", "ab") as fh:
+                                fh.write(b)
+                        except Exception:
+                            pass
             except Exception as e:
                 await self.push_error(error_msg=f"ditto audio in: {e}", exception=e)
             return  # engine audio comes back out paired with video

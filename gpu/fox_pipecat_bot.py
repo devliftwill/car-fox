@@ -350,8 +350,33 @@ async def daily_start(body: dict):
         logger.info("pipecat[daily]: participant joined — waiting for audible-playback confirmation")
         arm_greet_fallback(25)
 
+    @transport.event_handler("on_participant_left")
+    async def on_participant_left(t, participant, reason=None):
+        # COST: when the visitor leaves, end the pipeline. Without this the
+        # session stayed "active" forever, /health never reported idle, the
+        # auto-stop timer never fired and the A100 billed indefinitely
+        # ($3.67/hr) after a single demo call.
+        others = [p for p in (t.participants() or {}).items() if p[0] != "local"]
+        if others:
+            return
+        logger.info("pipecat[daily]: visitor left — ending session so the box can idle out")
+        try:
+            await task.cancel()
+        except Exception:
+            pass
+
     runner = PipelineRunner(handle_sigint=False)
-    _current["runner_task"] = asyncio.create_task(runner.run(task))
+    rt = asyncio.create_task(runner.run(task))
+    _current["runner_task"] = rt
+
+    def _session_done(_t):
+        # the pipeline has fully unwound: report idle so the idle-check can
+        # power the machine down.
+        if _current.get("task") is task:
+            _current["task"] = None
+            logger.info("pipecat[daily]: session finished — now idle")
+
+    rt.add_done_callback(_session_done)
 
     return {"room_url": room_url, "token": user_token, "expires": exp}
 
