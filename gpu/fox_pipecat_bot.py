@@ -507,11 +507,17 @@ async def upload_avatar_video(
     try:
         import subprocess
 
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", dest,
-             "-vf", "select=eq(n\\,0)", "-vframes", "1", poster],
-            check=True, capture_output=True, timeout=60,
-        )
+        # Seek ~1s in, not frame 0: a webcam's first frames are black while
+        # auto-exposure settles, which produced a black thumbnail. Fall back
+        # to the very start for clips shorter than the seek.
+        for seek in ("00:00:01.0", "00:00:00.3", "00:00:00.0"):
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-ss", seek, "-i", dest,
+                 "-vframes", "1", poster],
+                check=False, capture_output=True, timeout=60,
+            )
+            if os.path.exists(poster) and os.path.getsize(poster) > 2000:
+                break
     except Exception as e:
         logger.warning(f"avatar {avatar_id}: poster frame failed: {e}")
     logger.info(f"avatar {avatar_id}: video source saved ({len(data)} bytes) -> {dest}")
@@ -519,9 +525,12 @@ async def upload_avatar_video(
             "bytes": len(data), "poster": os.path.exists(poster)}
 
 
-@app.delete("/api/avatar/{avatar_id}")
-async def delete_avatar(avatar_id: str):
+@app.post("/api/avatar/remove")
+async def delete_avatar(avatar_id: str = Form(...)):
     """Remove a character from the demo library.
+
+    POST, not DELETE: the :8010 proxy that fronts this service rejects DELETE
+    with a 405 (verified), while POST is already proven by the video upload.
 
     Demo-surface only: the built-in fox is protected so the library can never
     be emptied to the point where there is nothing to call.

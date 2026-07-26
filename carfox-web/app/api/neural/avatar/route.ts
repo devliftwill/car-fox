@@ -63,13 +63,22 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** Remove a character from the demo library. */
+/** Remove a character from the demo library.
+ *
+ *  POST upstream, not DELETE: the :8010 proxy in front of the bot rejects
+ *  DELETE with a 405 (verified against the box), while POST already works —
+ *  it is how the video upload gets through. The browser still calls DELETE
+ *  here; only the hop to the GPU changes.
+ */
 export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("avatar_id") ?? "";
   if (!id) return NextResponse.json({ error: "avatar_id required" }, { status: 400 });
   try {
-    const r = await fetch(`${NEURAL}/pipecat/api/avatar/${encodeURIComponent(id)}`, {
-      method: "DELETE",
+    const fd = new FormData();
+    fd.append("avatar_id", id);
+    const r = await fetch(`${NEURAL}/pipecat/api/avatar/remove`, {
+      method: "POST",
+      body: fd,
       signal: AbortSignal.timeout(30000),
     });
     return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });

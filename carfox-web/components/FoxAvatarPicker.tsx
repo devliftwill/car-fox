@@ -40,6 +40,8 @@ export default function FoxAvatarPicker({
   // Bumped after an upload so the <img> refetches — the thumb route sets
   // max-age=86400, so a re-recorded face would otherwise show the old frame.
   const [thumbV, setThumbV] = useState(0);
+  // Camera is open and warming, before the countdown starts.
+  const [prepping, setPrepping] = useState(false);
   const previewRef = useRef<HTMLVideoElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLInputElement | null>(null);
@@ -104,25 +106,52 @@ export default function FoxAvatarPicker({
     setErr(null);
     let stream: MediaStream | null = null;
     try {
+      // Mount the preview FIRST. Two reasons, and the second one is why the
+      // first attempt recorded four seconds of black: the element only exists
+      // while `prepping || countdown !== null`, so setting srcObject before
+      // that state flips was a no-op — nothing ever consumed the stream and
+      // the visitor saw nothing either.
+      setPrepping(true);
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 640, facingMode: "user" },
+        // `ideal`, not exact: a webcam that cannot do the requested mode is
+        // free to pick its own rather than hand back something unusable.
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
         audio: false, // the source clip drives the FACE only; voice is Gemini's
       });
       const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find(
         (m) => MediaRecorder.isTypeSupported(m),
       );
-      // Show the visitor what is being captured — without this you record
-      // four seconds blind and only find out afterwards that you were off
-      // frame, which is exactly when the face detector fails.
-      if (previewRef.current) {
-        previewRef.current.srcObject = stream;
-        void previewRef.current.play().catch(() => {});
+
+      const el = previewRef.current;
+      if (el) {
+        el.srcObject = stream;
+        await el.play().catch(() => {});
+        // Wait for REAL pixels. A webcam reports a live track long before it
+        // delivers a lit frame, so recording immediately captures black.
+        await new Promise<void>((res) => {
+          const t0 = performance.now();
+          const check = () => {
+            const ready = el.videoWidth > 0 && el.readyState >= 2;
+            if ((ready && performance.now() - t0 > 900) || performance.now() - t0 > 4000) {
+              res();
+            } else {
+              requestAnimationFrame(check);
+            }
+          };
+          check();
+        });
+      } else {
+        await new Promise((r) => setTimeout(r, 1200)); // no preview: still warm up
       }
+
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       const chunks: BlobPart[] = [];
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       const done = new Promise<void>((res) => (rec.onstop = () => res()));
       rec.start();
+      setPrepping(false);
       setCountdown(Math.round(RECORD_MS / 1000));
       const tick = setInterval(
         () => setCountdown((c) => (c === null ? null : Math.max(0, c - 1))),
@@ -137,6 +166,7 @@ export default function FoxAvatarPicker({
       await upload(new File(chunks, `recorded.${ext}`, { type: mime || "video/webm" }), "video");
     } catch (e) {
       setCountdown(null);
+      setPrepping(false);
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       stream?.getTracks().forEach((t) => t.stop()); // release the camera light
@@ -226,7 +256,7 @@ export default function FoxAvatarPicker({
             between utterances instead of being a frozen photo. */}
         <button
           onClick={() => void record()}
-          disabled={busy || countdown !== null}
+          disabled={busy || prepping || countdown !== null}
           className="flex h-11 w-11 items-center justify-center rounded-full border border-dashed border-red-700/70 text-red-400 hover:border-red-500 hover:text-red-300 disabled:opacity-50"
           title="Record 4s from your camera — the clip becomes a moving avatar"
         >
@@ -267,7 +297,7 @@ export default function FoxAvatarPicker({
           }}
         />
       </div>
-      {countdown !== null && (
+      {(prepping || countdown !== null) && (
         <div className="mt-3 flex justify-center">
           <div className="relative">
             <video
@@ -277,13 +307,15 @@ export default function FoxAvatarPicker({
               className="h-32 w-32 rounded-lg object-cover ring-2 ring-red-600"
             />
             <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 text-[11px] text-red-400">
-              ● {countdown}s
+              {countdown === null ? "warming…" : `● ${countdown}s`}
             </span>
           </div>
         </div>
       )}
       <p className="mt-2 text-center text-[11px] text-neutral-600">
-        {countdown !== null
+        {prepping
+          ? "Opening the camera… wait for the countdown"
+          : countdown !== null
           ? `Recording… ${countdown}s — sit still, keep your face in frame`
           : busy
             ? "Building the avatar on the GPU…"
