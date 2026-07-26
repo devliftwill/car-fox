@@ -7,6 +7,12 @@
       "runtimeArgs": ["run", "dev"],
       "cwd": "carfox-web",
       "port": 3000
+    },
+    {
+      "name": "seny-app",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-C", "/Users/will/Repos/seny/apps/app", "dev"],
+      "port": 3001
     }
   ]
 }

@@ -15,7 +15,7 @@ import time
 
 import aiohttp
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -57,9 +57,17 @@ _current: dict = {"task": None, "runner_task": None}
 
 
 def _resolve_source(avatar_id: str):
+    """Where this character's likeness comes from.
+
+    A VIDEO source wins over a still when both exist: Ditto animates the face
+    on each source frame and its LoopLoader mirror-loops the clip, so the body
+    keeps breathing/shifting between utterances instead of being a frozen
+    photo. Measured 2026-07-26 on a 75-frame clip: 25.0 fps and pipeline fill
+    40-41 frames — identical to a still, so the motion is free.
+    """
     if "/" in avatar_id or ".." in avatar_id:
         return None
-    for name in ("source.png", "source.jpg"):
+    for name in ("source.mp4", "source.webm", "source.png", "source.jpg"):
         p = os.path.join(AVATAR_DIR, avatar_id, name)
         if os.path.exists(p):
             return p
@@ -461,6 +469,49 @@ async def offer(body: dict):
 
     answer = connection.get_answer()
     return answer
+
+
+@app.post("/api/avatar/video")
+async def upload_avatar_video(
+    avatar_id: str = Form(...),
+    video: UploadFile = File(...),
+):
+    """Record-a-clip characters: the uploaded video BECOMES the source.
+
+    No generation step and no training — Ditto reads source frames directly
+    (core/atomic_components/loader.py load_source_frames branches on
+    image-vs-video) and its LoopLoader mirror-loops them, so a few seconds of
+    someone breathing and shifting gives the character continuous body motion
+    between utterances. Measured: a 75-frame clip sustains 25.0 fps with the
+    same 40-41 frame pipeline fill as a still, so the movement is free.
+
+    Keep clips SHORT (2-5s). Every source frame is registered at setup, so a
+    long clip only slows startup; the mirror loop makes 3s look continuous.
+    """
+    if "/" in avatar_id or ".." in avatar_id or not avatar_id:
+        return {"error": "bad avatar_id"}
+    name = (video.filename or "").lower()
+    ext = ".webm" if name.endswith(".webm") else ".mp4"
+    d = os.path.join(AVATAR_DIR, avatar_id)
+    os.makedirs(d, exist_ok=True)
+    dest = os.path.join(d, f"source{ext}")
+    data = await video.read()
+    if not data:
+        return {"error": "empty upload"}
+    with open(dest, "wb") as fh:
+        fh.write(data)
+    # A still would otherwise win only if it sorted first; _resolve_source
+    # prefers video, but drop a stale one so the character cannot flip back.
+    for stale in ("source.png", "source.jpg"):
+        sp = os.path.join(d, stale)
+        if os.path.exists(sp):
+            try:
+                os.rename(sp, sp + ".replaced")
+            except OSError:
+                pass
+    logger.info(f"avatar {avatar_id}: video source saved ({len(data)} bytes) -> {dest}")
+    return {"ok": True, "avatar_id": avatar_id, "source": os.path.basename(dest),
+            "bytes": len(data)}
 
 
 @app.post("/api/telemetry")

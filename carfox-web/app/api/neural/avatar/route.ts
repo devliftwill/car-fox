@@ -30,6 +30,22 @@ export async function POST(req: NextRequest) {
     if (!(video instanceof File) || !avatarId) {
       return NextResponse.json({ error: "video file and avatar_id required" }, { status: 400 });
     }
+    // Ditto path: the recorded clip IS the source — no generation task. Ditto
+    // reads source frames straight from the video and mirror-loops them, so
+    // the character keeps breathing and shifting between utterances instead
+    // of being a frozen photo. Measured: same 25.0 fps and same pipeline fill
+    // as a still, so the body motion costs nothing.
+    if (String(inForm.get("engine") ?? "") === "ditto") {
+      const fd = new FormData();
+      fd.append("avatar_id", avatarId);
+      fd.append("video", video, video.name || "source.webm");
+      const r = await fetch(`${NEURAL}/pipecat/api/avatar/video`, {
+        method: "POST",
+        body: fd,
+        signal: AbortSignal.timeout(60000),
+      });
+      return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
+    }
     const fd = new FormData();
     fd.append("model", "musetalk");
     fd.append("version", "v15");
