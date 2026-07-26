@@ -335,9 +335,7 @@ async def daily_start(body: dict):
         if _current.get("ditto") is not None:
             # the audio writer publishes each 40ms tick's frame here —
             # lips follow the voice at playback time
-            _current["ditto"]._frame_setter = (
-                lambda fb, _p=pacer: setattr(_p, "_latest", (fb, (512, 512), "RGB"))
-            )
+            _current["ditto"]._frame_setter = pacer.set_latest
 
     # write-path probe: does the pipeline still hand frames to daily-python
     # while the client sees 0 video bps?

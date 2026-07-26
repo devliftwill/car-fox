@@ -55,6 +55,11 @@ LIMITS = {
     # a floor, not a quality score -- identical_frame_ratio is the primary
     # freeze detector and this catches "moving head, dead mouth".
     "mouth_openness_std_min": 4.0,
+    # The audio writer is the master A/V clock: it writes the audio slice and
+    # the frame for the same 40ms tick. Measured p95 is 0.31ms once the
+    # recording's JPEG encode moved off it, so 5ms is a wide guard that still
+    # catches real work creeping back onto the clock.
+    "tick_jitter_p95_ms_max": 5.0,
     "video_fps_min": 20.0,
     "reply_latency_s_max": 12.0,
     "worst_reply_s_max": 12.0,      # every turn, not just the first
@@ -370,6 +375,26 @@ def main():
         "frames_captured": len(frames),
     }
 
+    # Clock health comes from the bot, not the captured media -- see the
+    # "video clock is clean" check below for why the media cannot show it.
+    clock = {"dup": 0, "skipped": 0, "jitter_p95": 0.0, "jitter_max": 0.0}
+    try:
+        c = requests.get(f"{BOT}/api/trace", timeout=20).json().get("counters", {})
+        clock = {
+            "dup": int(c.get("video_dup_writes", 0)),
+            "skipped": int(c.get("video_skipped_frames", 0)),
+            "jitter_p95": float(c.get("tick_jitter_ms_p95", 0.0)),
+            "jitter_max": float(c.get("tick_jitter_ms_max", 0.0)),
+        }
+    except Exception as e:
+        print(f"  (clock health unavailable: {e})")
+    m.update({
+        "video_dup_writes": clock["dup"],
+        "video_skipped_frames": clock["skipped"],
+        "tick_jitter_ms_p95": clock["jitter_p95"],
+        "tick_jitter_ms_max": clock["jitter_max"],
+    })
+
     checks = [
         ("greeting arrives", m["greeting_at_s"] is not None and m["greeting_at_s"] <= LIMITS["greeting_within_s"],
          f'{m["greeting_at_s"]}s <= {LIMITS["greeting_within_s"]}s'),
@@ -393,6 +418,14 @@ def main():
          f'std {open_std:.0f} >= {LIMITS["mouth_openness_std_min"]}'),
         ("video is smooth", fps >= LIMITS["video_fps_min"],
          f'{fps:.1f} fps >= {LIMITS["video_fps_min"]}'),
+        # Judder is invisible to every check above: a build that handed the
+        # camera device the same frame twice a second still measured 25.0 fps
+        # here, because duplicates arrive on time and WebRTC compression noise
+        # keeps identical_frame_ratio at 0.000. Ask the bot instead.
+        ("video clock is clean", clock["dup"] == 0 and clock["skipped"] == 0,
+         f'{clock["dup"]} duplicate writes, {clock["skipped"]} frames never shown'),
+        ("A/V clock holds cadence", clock["jitter_p95"] <= LIMITS["tick_jitter_p95_ms_max"],
+         f'p95 {clock["jitter_p95"]}ms <= {LIMITS["tick_jitter_p95_ms_max"]}ms (max {clock["jitter_max"]}ms)'),
     ]
 
     print("\n" + "=" * 62)

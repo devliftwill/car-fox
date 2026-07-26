@@ -67,6 +67,12 @@ COUNTERS = {
     "windows_fed": 0, "windows_emitted": 0, "windows_played": 0,
     "batches_consumed": 0, "idle_audio_dropped": 0, "speech_audio_dropped": 0,
     "frames_published": 0, "playout_underruns": 0, "interruptions": 0,
+    # video clock health: a dup means the camera device was handed the same
+    # frame twice, a skip means a generated frame was never displayed.
+    "video_writes": 0, "video_dup_writes": 0, "video_skipped_frames": 0,
+    "video_keepalive_writes": 0,
+    # master-clock health: tick spacing should sit at 40ms.
+    "tick_jitter_ms_p95": 0.0, "tick_jitter_ms_max": 0.0, "rec_frames_dropped": 0,
     "pair_drift": 0,   # windows_emitted - batches_consumed; MUST stay 0
 }
 
@@ -170,7 +176,21 @@ class DittoVideoService(AIService):
         pending = deque()                    # (audio_slice, frame_bytes|None)
         deadline = _time.perf_counter()
         sink = None
+        # carfox: clock jitter — record how far each tick strays from 40ms.
+        self._ticks_ms = deque(maxlen=2000)
+        self._last_tick = None
+        if self._rec_ring is not None and not hasattr(self, "_rec_q"):
+            self._rec_q = queue.Queue(maxsize=50)
+            threading.Thread(target=self._rec_encoder_thread, daemon=True).start()
         while not self._stopping:
+            now_t = _time.perf_counter()
+            if self._last_tick is not None:
+                self._ticks_ms.append(abs((now_t - self._last_tick) * 1000.0 - 40.0))
+                if len(self._ticks_ms) % 100 == 0:
+                    j = sorted(self._ticks_ms)
+                    COUNTERS["tick_jitter_ms_p95"] = round(j[int(len(j) * 0.95)], 2)
+                    COUNTERS["tick_jitter_ms_max"] = round(j[-1], 2)
+            self._last_tick = now_t
             if sink is None:
                 sink = self._audio_sink_getter() if self._audio_sink_getter else None
                 if sink is None:
@@ -257,21 +277,14 @@ class DittoVideoService(AIService):
                     self._rec.append((piece, self._last_pub))
                     if len(self._rec) == 900:
                         self._flush_recording()
-                # Rolling ring for the whole session (JPEG so 90s fits in RAM).
+                # Rolling ring for the whole session. carfox: the JPEG encode
+                # runs on a BACKGROUND thread -- doing it here spent several ms
+                # of every 40ms tick on the clock that paces both media tracks.
                 if self._rec_ring is not None:
-                    jpg = None
-                    if fb_now is not None:
-                        try:
-                            arr = np.frombuffer(fb_now, dtype=np.uint8).reshape(512, 512, 3)
-                            ok, enc = cv2.imencode(
-                                ".jpg", arr[:, :, ::-1],
-                                [int(cv2.IMWRITE_JPEG_QUALITY), int(os.environ.get("FOX_RECORD_Q", "55"))],
-                            )
-                            jpg = enc.tobytes() if ok else None
-                        except Exception:
-                            jpg = None
-                    with self._rec_lock:
-                        self._rec_ring.append((piece, jpg))
+                    try:
+                        self._rec_q.put_nowait((piece, fb_now))
+                    except queue.Full:
+                        COUNTERS["rec_frames_dropped"] += 1
             except Exception:
                 logger.exception("ditto-pipecat: AUDIO WRITER DIED")
                 return
@@ -281,6 +294,28 @@ class DittoVideoService(AIService):
                 _time.sleep(rest)
             elif rest < -1.0:
                 deadline = _time.perf_counter()
+
+    def _rec_encoder_thread(self):
+        """JPEG-encode captured frames off the master clock."""
+        q_ = self._rec_q
+        while not self._stopping:
+            try:
+                piece, fb = q_.get(timeout=1)
+            except queue.Empty:
+                continue
+            jpg = None
+            if fb is not None:
+                try:
+                    arr = np.frombuffer(fb, dtype=np.uint8).reshape(512, 512, 3)
+                    ok, enc = cv2.imencode(
+                        ".jpg", arr[:, :, ::-1],
+                        [int(cv2.IMWRITE_JPEG_QUALITY), int(os.environ.get("FOX_RECORD_Q", "55"))],
+                    )
+                    jpg = enc.tobytes() if ok else None
+                except Exception:
+                    jpg = None
+            with self._rec_lock:
+                self._rec_ring.append((piece, jpg))
 
     def dump_session_recording(self, path):
         """Mux the rolling ring to `path` (mp4). Returns the path or None."""
@@ -743,6 +778,33 @@ class FramePacer(FrameProcessor):
         # writes (the bare-probe pattern) stream perfectly alongside audio.
         self._sink_getter = sink_getter
         self._writer_stop = False
+        # carfox: single-clock video. _seq advances every time the audio clock
+        # publishes a frame; _written_seq is what the device has actually seen.
+        self._seq = 0
+        self._written_seq = -1
+        self._sink_ref = None
+        self._direct = os.environ.get("FOX_SINGLE_CLOCK", "1") == "1"
+        self._last_direct = 0.0
+
+    def set_latest(self, fb):
+        """Publish one 40ms tick's frame. Called from the audio writer thread,
+        which is the master A/V clock -- in single-clock mode the write happens
+        HERE, alongside that tick's audio, so every generated frame is shown
+        exactly once."""
+        self._latest = (fb, (512, 512), "RGB")
+        self._seq += 1
+        if not self._direct:
+            return
+        sink = self._sink_ref
+        if sink is None:
+            return
+        try:
+            sink.write_frame(fb)
+            self._written_seq = self._seq
+            self._last_direct = time.perf_counter()
+            COUNTERS["video_writes"] += 1
+        except Exception:
+            logger.exception("ditto-pipecat: direct video write failed")
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -790,10 +852,29 @@ class FramePacer(FrameProcessor):
                     deadline = _time.perf_counter()
                     continue
                 logger.info(f"ditto-pipecat: video sink resolved: {type(sink).__name__}")
-            if self._latest is not None:
+                self._sink_ref = sink
+            if self._direct:
+                # carfox: single-clock -- the audio thread owns video timing.
+                # Only cover gaps (idle, or before the engine primes) so the
+                # encoder never starves on an empty track.
+                if (time.perf_counter() - self._last_direct) > 0.2 and self._latest is not None:
+                    try:
+                        sink.write_frame(self._latest[0])
+                        COUNTERS["video_keepalive_writes"] += 1
+                    except Exception:
+                        logger.exception("ditto-pipecat: VIDEO WRITER DIED")
+                        return
+            elif self._latest is not None:
+                # two-clock path, kept so the beat stays measurable
+                if self._seq == self._written_seq:
+                    COUNTERS["video_dup_writes"] += 1
+                elif self._seq - self._written_seq > 1:
+                    COUNTERS["video_skipped_frames"] += self._seq - self._written_seq - 1
+                self._written_seq = self._seq
                 img, _size, _fmt = self._latest
                 try:
                     sink.write_frame(img)
+                    COUNTERS["video_writes"] += 1
                     self._writes = getattr(self, "_writes", 0) + 1
                     if self._writes % 250 == 1:
                         logger.info(f"ditto-pipecat: video device writes {self._writes}")

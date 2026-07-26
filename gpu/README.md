@@ -97,6 +97,13 @@ patched pipeline calls, and throughput collapses. Re-run `patch_decoder.py`,
                               # 23.9 fps with the deficit climbing 71->81->95.
                               # Raising this requires making diffusion faster
                               # FIRST, then re-running the multi-turn gate.
+    FOX_SINGLE_CLOCK=1        # ONE clock owns video. The audio writer thread
+                              # writes each 40ms tick's audio slice AND that
+                              # tick's frame to the camera device. At 0 the old
+                              # two-clock path runs (pacer samples a shared
+                              # `_latest` on its own metronome) and the beat
+                              # between them handed the device the SAME frame
+                              # 107 times in ~50s = ~2 stutters/sec of judder.
     FOX_LEDGER_TARGET=6       FOX_WARM_WINDOWS=0
     FOX_AV_OFFSET_TICKS=0     FOX_RECORD=0   # 1 = dump /tmp/fox_rec.mp4
     FOX_SPEECH_HANG=2         # speech hangover in windows (400ms). At 10 (2s)
@@ -114,6 +121,33 @@ greeting, reply, latency, voice continuity, frozen-face, mouth articulation,
 fps. Validated against a known-bad build (`DITTO_STEPS=3`) — it fails on mouth
 articulation, and note the frozen-frame check CANNOT see that regression
 because WebRTC compression makes every frame differ slightly.
+
+## Judder: why "25.0 fps" proved nothing
+
+Will reported "still very choppy" on a build the gate had passed at 25.0 fps.
+Both were true. Video ran through **two free-running 40ms metronomes** — the
+audio writer set `pacer._latest`, and the pacer's own thread sampled it — with
+no phase relationship. When the pacer sampled early it wrote the previous frame
+again; the average stayed exactly 25 fps while motion advanced 40/40/80/0ms.
+
+Nothing in the harness could see it:
+
+- `video_fps` counts *arrivals*, and duplicates arrive right on time.
+- `identical_frame_ratio` reads 0.000 because WebRTC compression makes even a
+  duplicated frame differ by a few LSBs.
+- the **session recording is written from the audio clock**, upstream of the
+  beat, so the mp4 looks fine too.
+
+So the bot counts it directly (`video_dup_writes`, `video_skipped_frames`) and
+the gate asserts zero. Validated the way `DITTO_STEPS=3` was: run with
+`FOX_SINGLE_CLOCK=0` and `video is smooth` still PASSES at 25.0 fps while
+`video clock is clean` FAILS with 107 duplicate writes.
+
+`tick_jitter_ms_p95` guards the other half — the master clock must stay at 40ms,
+so per-tick work cannot creep back onto it. The recording's JPEG encode used to
+run there; moving it to a background thread took max jitter 60.15ms -> 4.37ms.
+
+**Do not measure smoothness from the recording or from fps.** Ask the bot.
 
 ## Measured audio facts (stop re-litigating these)
 
