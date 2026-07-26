@@ -63,6 +63,22 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/** Remove a character from the demo library. */
+export async function DELETE(req: NextRequest) {
+  const id = req.nextUrl.searchParams.get("avatar_id") ?? "";
+  if (!id) return NextResponse.json({ error: "avatar_id required" }, { status: 400 });
+  try {
+    const r = await fetch(`${NEURAL}/pipecat/api/avatar/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(30000),
+    });
+    return NextResponse.json(await r.json().catch(() => ({})), { status: r.status });
+  } catch (e) {
+    console.error("neural avatar delete proxy:", e);
+    return NextResponse.json({ error: "studio unreachable" }, { status: 502 });
+  }
+}
+
 export async function GET(req: NextRequest) {
   const task = req.nextUrl.searchParams.get("task");
   // ?thumb=<avatar_id> → small face preview JPEG

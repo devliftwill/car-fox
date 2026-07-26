@@ -500,18 +500,44 @@ async def upload_avatar_video(
         return {"error": "empty upload"}
     with open(dest, "wb") as fh:
         fh.write(data)
-    # A still would otherwise win only if it sorted first; _resolve_source
-    # prefers video, but drop a stale one so the character cannot flip back.
-    for stale in ("source.png", "source.jpg"):
-        sp = os.path.join(d, stale)
-        if os.path.exists(sp):
-            try:
-                os.rename(sp, sp + ".replaced")
-            except OSError:
-                pass
+    # Poster frame. The thumbnail endpoint serves source.png, so without this
+    # a video avatar shows a broken image in the picker. _resolve_source still
+    # prefers the video (it is first in the list), so this is display only.
+    poster = os.path.join(d, "source.png")
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", dest,
+             "-vf", "select=eq(n\\,0)", "-vframes", "1", poster],
+            check=True, capture_output=True, timeout=60,
+        )
+    except Exception as e:
+        logger.warning(f"avatar {avatar_id}: poster frame failed: {e}")
     logger.info(f"avatar {avatar_id}: video source saved ({len(data)} bytes) -> {dest}")
     return {"ok": True, "avatar_id": avatar_id, "source": os.path.basename(dest),
-            "bytes": len(data)}
+            "bytes": len(data), "poster": os.path.exists(poster)}
+
+
+@app.delete("/api/avatar/{avatar_id}")
+async def delete_avatar(avatar_id: str):
+    """Remove a character from the demo library.
+
+    Demo-surface only: the built-in fox is protected so the library can never
+    be emptied to the point where there is nothing to call.
+    """
+    if "/" in avatar_id or ".." in avatar_id or not avatar_id:
+        return {"error": "bad avatar_id"}
+    if avatar_id == "fox_ditto":
+        return {"error": "the built-in Car Fox cannot be removed"}
+    d = os.path.join(AVATAR_DIR, avatar_id)
+    if not os.path.isdir(d):
+        return {"error": "not found"}
+    import shutil
+
+    shutil.rmtree(d, ignore_errors=True)
+    logger.info(f"avatar {avatar_id}: removed")
+    return {"ok": True, "avatar_id": avatar_id}
 
 
 @app.post("/api/telemetry")

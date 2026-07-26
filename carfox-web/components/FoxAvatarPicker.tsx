@@ -37,6 +37,10 @@ export default function FoxAvatarPicker({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
+  // Bumped after an upload so the <img> refetches — the thumb route sets
+  // max-age=86400, so a re-recorded face would otherwise show the old frame.
+  const [thumbV, setThumbV] = useState(0);
+  const previewRef = useRef<HTMLVideoElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLInputElement | null>(null);
 
@@ -81,6 +85,7 @@ export default function FoxAvatarPicker({
       localStorage.setItem(NAMES_KEY, JSON.stringify(next));
       setNames(next);
       setLibrary((l) => [{ avatar_id: avatarId, engine: "ditto" }, ...l]);
+      setThumbV((v) => v + 1);
       onPick(avatarId); // switch the call straight to the new face
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -106,6 +111,13 @@ export default function FoxAvatarPicker({
       const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find(
         (m) => MediaRecorder.isTypeSupported(m),
       );
+      // Show the visitor what is being captured — without this you record
+      // four seconds blind and only find out afterwards that you were off
+      // frame, which is exactly when the face detector fails.
+      if (previewRef.current) {
+        previewRef.current.srcObject = stream;
+        void previewRef.current.play().catch(() => {});
+      }
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       const chunks: BlobPart[] = [];
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
@@ -128,6 +140,28 @@ export default function FoxAvatarPicker({
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       stream?.getTracks().forEach((t) => t.stop()); // release the camera light
+      if (previewRef.current) previewRef.current.srcObject = null;
+    }
+  }
+
+  async function remove(avatarId: string) {
+    if (!confirm(`Remove "${names[avatarId] ?? avatarId}" from the library?`)) return;
+    setErr(null);
+    try {
+      const r = await fetch(`/api/neural/avatar?avatar_id=${encodeURIComponent(avatarId)}`, {
+        method: "DELETE",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j?.error) throw new Error(j?.error || `remove failed (${r.status})`);
+      setLibrary((l) => l.filter((a) => a.avatar_id !== avatarId));
+      const next = { ...readNames() };
+      delete next[avatarId];
+      localStorage.setItem(NAMES_KEY, JSON.stringify(next));
+      setNames(next);
+      // If the removed face was on the call, fall back to the built-in fox.
+      if (current === avatarId) onPick("fox_ditto");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -145,8 +179,8 @@ export default function FoxAvatarPicker({
         {library.map((a) => {
           const active = a.avatar_id === current;
           return (
+            <div key={a.avatar_id} className="group relative">
             <button
-              key={a.avatar_id}
               onClick={() => onPick(a.avatar_id)}
               onDoubleClick={() => rename(a.avatar_id)}
               title={`${names[a.avatar_id] ?? a.avatar_id} — click to use, double-click to rename`}
@@ -156,7 +190,7 @@ export default function FoxAvatarPicker({
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={`/api/neural/avatar?thumb=${encodeURIComponent(a.avatar_id)}`}
+                src={`/api/neural/avatar?thumb=${encodeURIComponent(a.avatar_id)}&v=${thumbV}`}
                 alt={names[a.avatar_id] ?? a.avatar_id}
                 width={44}
                 height={44}
@@ -166,6 +200,17 @@ export default function FoxAvatarPicker({
                 {names[a.avatar_id] ?? (a.avatar_id === "fox_ditto" ? "Car Fox" : a.avatar_id)}
               </span>
             </button>
+            {a.avatar_id !== "fox_ditto" && (
+              <button
+                onClick={() => void remove(a.avatar_id)}
+                aria-label={`Remove ${names[a.avatar_id] ?? a.avatar_id}`}
+                title="Remove from library"
+                className="absolute -right-1 -top-1 hidden h-5 w-5 items-center justify-center rounded-full bg-neutral-800 text-[11px] leading-none text-neutral-300 ring-1 ring-neutral-600 hover:bg-red-900 hover:text-white group-hover:flex"
+              >
+                ×
+              </button>
+            )}
+            </div>
           );
         })}
 
@@ -222,6 +267,21 @@ export default function FoxAvatarPicker({
           }}
         />
       </div>
+      {countdown !== null && (
+        <div className="mt-3 flex justify-center">
+          <div className="relative">
+            <video
+              ref={previewRef}
+              muted
+              playsInline
+              className="h-32 w-32 rounded-lg object-cover ring-2 ring-red-600"
+            />
+            <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 text-[11px] text-red-400">
+              ● {countdown}s
+            </span>
+          </div>
+        </div>
+      )}
       <p className="mt-2 text-center text-[11px] text-neutral-600">
         {countdown !== null
           ? `Recording… ${countdown}s — sit still, keep your face in frame`
