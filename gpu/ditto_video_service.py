@@ -15,6 +15,7 @@ import os
 import queue
 import sys
 import threading
+import zlib
 import time
 from collections import deque
 
@@ -73,6 +74,9 @@ COUNTERS = {
     "video_keepalive_writes": 0,
     # master-clock health: tick spacing should sit at 40ms.
     "tick_jitter_ms_p95": 0.0, "tick_jitter_ms_max": 0.0, "rec_frames_dropped": 0,
+    # distinctness of what was actually transmitted, measured on raw bytes
+    # BEFORE the recording compresses anything.
+    "frames_checked": 0, "frame_content_dupes": 0, "frame_dupes_in_speech": 0,
     "pair_drift": 0,   # windows_emitted - batches_consumed; MUST stay 0
 }
 
@@ -303,6 +307,20 @@ class DittoVideoService(AIService):
                 piece, fb = q_.get(timeout=1)
             except queue.Empty:
                 continue
+            # carfox: content dupes -- CRC the raw frame before compression.
+            if fb is not None:
+                crc = zlib.crc32(fb)
+                COUNTERS["frames_checked"] += 1
+                if crc == getattr(self, "_last_crc", None):
+                    COUNTERS["frame_content_dupes"] += 1
+                    # loud audio on this tick == the mouth should be moving
+                    try:
+                        pk = np.abs(np.frombuffer(piece, dtype=np.int16)).max()
+                    except Exception:
+                        pk = 0
+                    if pk > 900:
+                        COUNTERS["frame_dupes_in_speech"] += 1
+                self._last_crc = crc
             jpg = None
             if fb is not None:
                 try:

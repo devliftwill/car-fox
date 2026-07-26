@@ -60,6 +60,12 @@ LIMITS = {
     # recording's JPEG encode moved off it, so 5ms is a wide guard that still
     # catches real work creeping back onto the clock.
     "tick_jitter_p95_ms_max": 5.0,
+    # Duplicate frame CONTENT, CRCed on raw bytes before any compression.
+    # A correct build measures 0.00% -- the engine animates continuously, so
+    # even an idle face keeps breathing. 5% is slack for a genuinely static
+    # moment, not a budget; the aliasing bug read 80%.
+    "content_dupe_ratio_max": 0.05,
+    "speech_dupes_max": 10,
     "video_fps_min": 20.0,
     "reply_latency_s_max": 12.0,
     "worst_reply_s_max": 12.0,      # every turn, not just the first
@@ -380,11 +386,16 @@ def main():
     clock = {"dup": 0, "skipped": 0, "jitter_p95": 0.0, "jitter_max": 0.0}
     try:
         c = requests.get(f"{BOT}/api/trace", timeout=20).json().get("counters", {})
+        checked = int(c.get("frames_checked", 0))
         clock = {
             "dup": int(c.get("video_dup_writes", 0)),
             "skipped": int(c.get("video_skipped_frames", 0)),
             "jitter_p95": float(c.get("tick_jitter_ms_p95", 0.0)),
             "jitter_max": float(c.get("tick_jitter_ms_max", 0.0)),
+            "checked": checked,
+            "content_dupes": int(c.get("frame_content_dupes", 0)),
+            "dupes_loud": int(c.get("frame_dupes_in_speech", 0)),
+            "dup_ratio": (int(c.get("frame_content_dupes", 0)) / checked) if checked else 0.0,
         }
     except Exception as e:
         print(f"  (clock health unavailable: {e})")
@@ -424,6 +435,18 @@ def main():
         # keeps identical_frame_ratio at 0.000. Ask the bot instead.
         ("video clock is clean", clock["dup"] == 0 and clock["skipped"] == 0,
          f'{clock["dup"]} duplicate writes, {clock["skipped"]} frames never shown'),
+        # THE check for choppiness. Everything else here -- fps, the clock
+        # counters above, even the mp4 -- passed a build that was transmitting
+        # each 200ms window's last frame five times (80% duplicate content,
+        # ~5 effective fps). Only CRCing the raw bytes before compression
+        # catches it. dup_writes cannot: it is only incremented on the
+        # two-clock path, so in the shipped mode it is always 0.
+        ("frames are distinct", clock["checked"] > 0
+            and clock["dup_ratio"] <= LIMITS["content_dupe_ratio_max"]
+            and clock["dupes_loud"] <= LIMITS["speech_dupes_max"],
+         f'{100*clock["dup_ratio"]:.1f}% duplicate content '
+         f'(-> {25*(1-clock["dup_ratio"]):.1f} effective fps), '
+         f'{clock["dupes_loud"]} while speaking'),
         ("A/V clock holds cadence", clock["jitter_p95"] <= LIMITS["tick_jitter_p95_ms_max"],
          f'p95 {clock["jitter_p95"]}ms <= {LIMITS["tick_jitter_p95_ms_max"]}ms (max {clock["jitter_max"]}ms)'),
     ]

@@ -149,6 +149,28 @@ run there; moving it to a background thread took max jitter 60.15ms -> 4.37ms.
 
 **Do not measure smoothness from the recording or from fps.** Ask the bot.
 
+### The bigger one: frame aliasing (my own regression)
+
+`video_dup_writes` only increments on the two-clock path, so once
+`FOX_SINGLE_CLOCK=1` shipped it was **always 0** — it proves the beat is gone
+and nothing more. Underneath it sat a far worse defect I had introduced myself,
+caching `result_buffer` in `putback` for the 786KB/frame saving. That function
+ends with `return self.result_buffer`, so every frame in a batch aliased one
+buffer and each 200ms window transmitted its last frame five times:
+
+    80% of transmitted frames byte-identical  ->  ~5 effective fps
+
+Every instrument said it was fine. fps 25.0 (duplicates arrive on time),
+identical_frame_ratio 0.000, clock counters clean, client-side WebRTC stats
+showing zero freezes and zero dropped frames — all true, all irrelevant. The
+mp4 read ~12% rather than 80% because x264 reconstructs identical inputs
+slightly differently, so the recording is unreliable in **both** directions.
+
+What found it: CRC the raw 786KB frame bytes before anything compresses them,
+on the recording's background thread. Now `frames are distinct` in the gate,
+reading 0.00% / 25.0 effective fps. **Any future "cache this buffer" idea in the
+render path must be checked against that counter, not against fps.**
+
 ## Measured audio facts (stop re-litigating these)
 
 - **Gemini's TTS is band-limited at the source**: 99.8% of energy below 4kHz,
