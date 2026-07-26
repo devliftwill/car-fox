@@ -36,7 +36,9 @@ export default function FoxAvatarPicker({
   const [names, setNames] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const videoRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => setNames(readNames()), []);
 
@@ -48,20 +50,33 @@ export default function FoxAvatarPicker({
     void refresh();
   }, [refresh]);
 
-  async function upload(file: File) {
+  /** A photo becomes a still avatar; a VIDEO becomes a moving one — Ditto
+   *  animates the face on each source frame and mirror-loops the clip, so the
+   *  body keeps breathing between utterances. Measured: same 25fps and same
+   *  latency as a still, so the motion is free. */
+  async function upload(file: File, kind: "photo" | "video" = "photo") {
     setErr(null);
     setBusy(true);
     const avatarId = "chr_" + Date.now().toString(36);
     try {
       const fd = new FormData();
       fd.append("avatar_id", avatarId);
-      fd.append("photo", file, file.name || "source.png");
+      if (kind === "video") {
+        // engine=ditto routes to "the clip IS the source" rather than to a
+        // MuseTalk generation task.
+        fd.append("engine", "ditto");
+        fd.append("video", file, file.name || "source.webm");
+      } else {
+        fd.append("photo", file, file.name || "source.png");
+      }
       const r = await fetch("/api/neural/avatar", { method: "POST", body: fd });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || (j?.code !== undefined && j.code !== 0)) {
         throw new Error(j?.msg || j?.error || `upload failed (${r.status})`);
       }
-      const label = (file.name || "").replace(/\.[^.]+$/, "").slice(0, 24) || "New avatar";
+      const label =
+        (file.name || "").replace(/\.[^.]+$/, "").slice(0, 24) ||
+        (kind === "video" ? "Recorded" : "New avatar");
       const next = { ...readNames(), [avatarId]: label };
       localStorage.setItem(NAMES_KEY, JSON.stringify(next));
       setNames(next);
@@ -71,6 +86,48 @@ export default function FoxAvatarPicker({
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** Record a short clip from the webcam and make it the avatar source.
+   *  Kept to RECORD_MS: every source frame is registered at setup, so a long
+   *  clip only slows the wake — the mirror loop makes a few seconds read as
+   *  continuous. Sit still-ish: big zooms or shaky motion break the face
+   *  detector and the engine fails at setup. */
+  const RECORD_MS = 4000;
+  async function record() {
+    setErr(null);
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 640, facingMode: "user" },
+        audio: false, // the source clip drives the FACE only; voice is Gemini's
+      });
+      const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find(
+        (m) => MediaRecorder.isTypeSupported(m),
+      );
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      const chunks: BlobPart[] = [];
+      rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+      const done = new Promise<void>((res) => (rec.onstop = () => res()));
+      rec.start();
+      setCountdown(Math.round(RECORD_MS / 1000));
+      const tick = setInterval(
+        () => setCountdown((c) => (c === null ? null : Math.max(0, c - 1))),
+        1000,
+      );
+      await new Promise((r) => setTimeout(r, RECORD_MS));
+      clearInterval(tick);
+      rec.stop();
+      await done;
+      setCountdown(null);
+      const ext = (mime || "").includes("mp4") ? "mp4" : "webm";
+      await upload(new File(chunks, `recorded.${ext}`, { type: mime || "video/webm" }), "video");
+    } catch (e) {
+      setCountdown(null);
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      stream?.getTracks().forEach((t) => t.stop()); // release the camera light
     }
   }
 
@@ -120,6 +177,28 @@ export default function FoxAvatarPicker({
         >
           {busy ? "…" : "＋"}
         </button>
+        {/* Record a clip — a MOVING source, so the body keeps breathing
+            between utterances instead of being a frozen photo. */}
+        <button
+          onClick={() => void record()}
+          disabled={busy || countdown !== null}
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-dashed border-red-700/70 text-red-400 hover:border-red-500 hover:text-red-300 disabled:opacity-50"
+          title="Record 4s from your camera — the clip becomes a moving avatar"
+        >
+          {countdown !== null ? countdown : "●"}
+        </button>
+
+        {/* Same thing from an existing file, for anyone who would rather
+            supply real footage than sit for the camera. */}
+        <button
+          onClick={() => videoRef.current?.click()}
+          disabled={busy || countdown !== null}
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-dashed border-neutral-600 text-[10px] text-neutral-400 hover:border-neutral-400 hover:text-neutral-200 disabled:opacity-50"
+          title="Upload a short video (2-5s) as a moving avatar"
+        >
+          MP4
+        </button>
+
         <input
           ref={fileRef}
           type="file"
@@ -131,11 +210,24 @@ export default function FoxAvatarPicker({
             e.target.value = "";
           }}
         />
+        <input
+          ref={videoRef}
+          type="file"
+          accept="video/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void upload(f, "video");
+            e.target.value = "";
+          }}
+        />
       </div>
       <p className="mt-2 text-center text-[11px] text-neutral-600">
-        {busy
-          ? "Building the avatar on the GPU…"
-          : "Click a face to switch · ＋ adds a photo · double-click to rename"}
+        {countdown !== null
+          ? `Recording… ${countdown}s — sit still, keep your face in frame`
+          : busy
+            ? "Building the avatar on the GPU…"
+            : "Click a face to switch · ＋ photo · ● record 4s · MP4 file · double-click to rename"}
       </p>
       {err && <p className="mt-1 text-center text-[11px] text-red-400">{err}</p>}
     </div>
