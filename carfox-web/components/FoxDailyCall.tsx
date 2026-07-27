@@ -134,7 +134,7 @@ export default function FoxDailyCall({ avatarId }: { avatarId: string }) {
   return (
     <div className="mx-auto w-full max-w-[420px]">
       <div
-        className="relative overflow-hidden rounded-2xl bg-neutral-900 shadow-2xl"
+        className={`fox-live-frame ${phase === "live" ? "is-live" : ""}`}
         style={{ aspectRatio: "1 / 1" }}
       >
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
@@ -158,12 +158,24 @@ export default function FoxDailyCall({ avatarId }: { avatarId: string }) {
           </button>
         )}
         {phase !== "live" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-neutral-900/80 p-6 text-center">
+          <div className="fox-live-wake">
             {phase === "connecting" ? (
-              <p className="text-[14px] text-neutral-300">{status}</p>
+              <>
+                <span className="fox-live-pulse" aria-hidden="true">
+                  <i /><i /><i />
+                </span>
+                <span className="fox-live-status">{status || "Connecting"}</span>
+                <span className="fox-live-hint">
+                  He renders in real time on our own GPU — a moment while he wakes.
+                </span>
+              </>
             ) : (
               <>
-                {phase === "error" && <p className="text-[13px] text-red-400">{status}</p>}
+                {phase === "error" && (
+                  <span className="fox-live-hint" style={{ color: "rgba(255,140,120,.95)" }}>
+                    {status}
+                  </span>
+                )}
                 <button onClick={() => void start()} className="sq-btn sq-btn--white">
                   Talk to the Fox
                 </button>
@@ -171,6 +183,7 @@ export default function FoxDailyCall({ avatarId }: { avatarId: string }) {
             )}
           </div>
         )}
+        {phase === "live" && status && <div className="fox-live-cap">{status}</div>}
       </div>
       {phase === "live" && (
         <p className="mt-3 text-center text-[13px] text-neutral-500">{status}</p>

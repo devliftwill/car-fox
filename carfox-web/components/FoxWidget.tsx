@@ -106,11 +106,24 @@ export default function FoxWidget() {
             {ready ? (
               <FoxDailyCall key={pathname} avatarId="fox_ditto" />
             ) : (
-              <div style={{ padding: "1.25rem", textAlign: "center", fontSize: 13, lineHeight: 1.6 }}>
-                Waking the fox studio… {waking}s
-                <div style={{ opacity: 0.6, marginTop: 6 }}>
-                  The GPU sleeps between calls to keep costs down. First call
-                  takes about two minutes; after that it is instant.
+              <div className="fox-live-frame" style={{ aspectRatio: "1 / 1" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src="/carfox-avatar.png"
+                  alt=""
+                  style={{ width: "100%", height: "100%", objectFit: "cover", opacity: 0.5 }}
+                />
+                <div className="fox-live-wake">
+                  <span className="fox-live-pulse" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  <span className="fox-live-status">Waking the studio · {waking}s</span>
+                  <span className="fox-live-hint">
+                    His GPU sleeps between calls. First one takes a couple of
+                    minutes — after that he is instant.
+                  </span>
                 </div>
               </div>
             )}
