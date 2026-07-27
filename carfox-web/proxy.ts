@@ -21,6 +21,20 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
+  // Meeting-bot surface. Recall.ai renders a URL as the bot's camera, and its
+  // browser carries no session cookie — so without this the bot streams the
+  // passcode wall into the meeting instead of the fox. Gated on a separate
+  // secret in the query string rather than opened up: the passcode still
+  // protects every other route, and this one is only useful to whoever holds
+  // the key. Constant-time-ish compare to avoid leaking it by timing.
+  if (pathname === "/fox-meet") {
+    const key = process.env.MEET_BOT_KEY;
+    const given = req.nextUrl.searchParams.get("k") ?? "";
+    if (key && given.length === key.length && given === key) {
+      return NextResponse.next();
+    }
+  }
+
   const token = req.cookies.get(AUTH_COOKIE)?.value;
   if (token && token === (await gateToken(passcode))) {
     return NextResponse.next();

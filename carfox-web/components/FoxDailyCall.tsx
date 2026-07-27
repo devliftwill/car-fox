@@ -12,7 +12,15 @@ import FoxPipecatCall from "./FoxPipecatCall";
  * Falls back to the SmallWebRTC path (FoxPipecatCall) when the bot reports
  * no DAILY_API_KEY, so the fox keeps working while keys move around.
  */
-export default function FoxDailyCall({ avatarId }: { avatarId: string }) {
+export default function FoxDailyCall({
+  avatarId,
+  autoStart = false,
+}: {
+  avatarId: string;
+  /** Begin the call on mount. For the meeting-bot surface, where the page is
+   *  rendered inside a bot's browser and nobody can press a button. */
+  autoStart?: boolean;
+}) {
   const [phase, setPhase] = useState<"idle" | "connecting" | "live" | "error" | "fallback">("idle");
   const [status, setStatus] = useState("");
   const [needsUnmute, setNeedsUnmute] = useState(false);
@@ -130,6 +138,15 @@ export default function FoxDailyCall({ avatarId }: { avatarId: string }) {
   }
 
   if (phase === "fallback") return <FoxPipecatCall avatarId={avatarId} />;
+
+  useEffect(() => {
+    if (!autoStart) return;
+    if (phase !== "idle") return;
+    void start();
+    // start() is stable for the life of the component; re-running on every
+    // phase change would restart the call mid-conversation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart]);
 
   return (
     <div className="mx-auto w-full max-w-[420px]">
