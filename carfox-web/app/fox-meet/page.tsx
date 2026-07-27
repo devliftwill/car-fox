@@ -45,6 +45,29 @@ export default function FoxMeetPage() {
     };
   }, []);
 
+  // Hold the studio awake for as long as this page is rendering.
+  //
+  // The GPU box powers itself off when it looks idle, and its idle check knows
+  // nothing about meeting bots — so it shut the box down MID-MEETING, which is
+  // what produced a black frame with "waking up" underneath it. The demo page
+  // has always pinged this; the bot surface did not.
+  //
+  // Deliberately NOT gated on `ready`: the wake itself takes ~2 minutes, and
+  // the box has to survive that window too. Recall keeps this page rendering
+  // for the whole call, so the lock lasts exactly as long as the bot is in the
+  // meeting and expires once it leaves — the cost saving is preserved.
+  useEffect(() => {
+    const ping = () =>
+      void fetch("/api/neural/pipecat?path=keepalive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }).catch(() => {});
+    ping();
+    const id = setInterval(ping, 45000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <main
       style={{
