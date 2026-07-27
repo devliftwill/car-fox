@@ -31,7 +31,20 @@ export async function proxy(req: NextRequest) {
     const key = process.env.MEET_BOT_KEY;
     const given = req.nextUrl.searchParams.get("k") ?? "";
     if (key && given.length === key.length && given === key) {
-      return NextResponse.next();
+      // Hand the bot a real session cookie. The page immediately calls
+      // /api/neural/wake and /api/neural/pipecat, and exempting only the
+      // page left those API calls redirecting to /gate — the page then span
+      // on "waking the fox" forever waiting for a reply that never came.
+      // Whoever holds MEET_BOT_KEY is already trusted with the site.
+      const res = NextResponse.next();
+      res.cookies.set(AUTH_COOKIE, await gateToken(passcode), {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: true,
+        path: "/",
+        maxAge: 60 * 60 * 4,
+      });
+      return res;
     }
   }
 
