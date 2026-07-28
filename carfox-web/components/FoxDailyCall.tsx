@@ -229,6 +229,20 @@ export default function FoxDailyCall({
       });
       call.on("error", (ev) => console.warn("[fox] daily error:", ev));
 
+      // AUTO-RECOVER. A meeting bot has nobody to click "try again": when the
+      // GPU side ends a session the page just sat there streaming a black
+      // frame into a live meeting. Rebuild the call instead.
+      if (autoStart) {
+        call.on("left-meeting", () => {
+          beacon("call_dropped_relaunching", {});
+          const dead = callRef.current;
+          callRef.current = null;
+          void dead?.destroy().catch(() => {});
+          setPhase("idle");
+          setTimeout(() => void start(), 2000);
+        });
+      }
+
       try {
         await call.join({
           url: seat.room_url,

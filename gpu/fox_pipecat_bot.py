@@ -203,7 +203,7 @@ class _DropAudio(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-def _build_pipeline(transport, source: str):
+def _build_pipeline(transport, source: str, idle_timeout: float = 300.0):
     llm = GeminiLiveLLMService(
         api_key=os.environ["GEMINI_API_KEY"],
         # swappable so audio quality can be A/B'd. gemini-3.1-flash-live-preview
@@ -265,7 +265,16 @@ def _build_pipeline(transport, source: str):
         transport.output(),
         assistant_agg,
     ])
-    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+    # Pipecat cancels a pipeline after idle_timeout_secs with no speech either
+    # way — 300s by default. That is reasonable for a website visitor who
+    # wandered off, and WRONG for a meeting, where sitting quietly and
+    # listening is the normal state. It killed a live call at exactly the
+    # five minute mark and left the bot on screen showing a black frame.
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(allow_interruptions=True),
+        idle_timeout_secs=idle_timeout,
+    )
     _current["task"] = task
 
     async def send_greeting():
@@ -392,7 +401,14 @@ async def daily_start(body: dict):
     )
 
     _current["transport"] = transport
-    task, arm_greet_fallback = _build_pipeline(transport, source)
+    # A meeting bot may legitimately listen in silence for a long stretch;
+    # a website visitor who has said nothing for five minutes has left. The
+    # session still ends the moment the far side leaves the room, so the
+    # longer ceiling costs nothing in the normal case — it is only a backstop
+    # against a page that dies without disconnecting cleanly.
+    task, arm_greet_fallback = _build_pipeline(
+        transport, source, idle_timeout=2700.0 if hold else 300.0
+    )
 
     # Daily path: BOTH media tracks are written from plain threads, exactly
     # like the bare daily-python probe that streams perfectly — pipecat
