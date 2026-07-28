@@ -331,12 +331,19 @@ async def daily_start(body: dict):
     # people trying the website. It is NOT fine mid-meeting: anyone who opened
     # car-fox.vercel.app would silently kill the fox in front of a room of
     # people. A held session refuses newcomers instead of yielding to them.
+    # The hold belongs to ONE caller, identified by hold_id. A bare boolean was
+    # not enough: two meeting bots in the same call both asked to hold, both
+    # were granted it, and each tore down the other's session on arrival — the
+    # fox rendered, never finished waking, and answered nobody.
     hold = bool(body.get("hold"))
-    if _current.get("hold_until", 0) > time.time() and not hold:
-        logger.info("pipecat[daily]: refusing start — a meeting holds this box")
+    hold_id = body.get("hold_id") or ""
+    held = _current.get("hold_until", 0) > time.time()
+    if held and hold_id != _current.get("hold_id"):
+        logger.info("pipecat[daily]: refusing start — another session holds this box")
         return {"error": "busy"}
     if hold:
         _current["hold_until"] = time.time() + 180
+        _current["hold_id"] = hold_id
 
     await _teardown_current()
 
@@ -482,7 +489,9 @@ async def daily_start(body: dict):
         # power the machine down.
         if _current.get("task") is task:
             _current["task"] = None
-            _current["hold_until"] = 0  # the meeting is over; the box is free
+            # the meeting is over; the box is free for the next caller
+            _current["hold_until"] = 0
+            _current["hold_id"] = ""
             logger.info("pipecat[daily]: session finished — now idle")
             _dump_session()
 
@@ -629,7 +638,9 @@ async def keepalive(body: dict = None):
             f.write(str(time.time()))
         # a meeting bot renews its claim on the box with every ping, so the
         # hold dies ~3 minutes after the bot leaves the call
-        if (body or {}).get("hold"):
+        b = body or {}
+        # only the holder may renew its own claim
+        if b.get("hold") and b.get("hold_id", "") == _current.get("hold_id", ""):
             _current["hold_until"] = time.time() + 180
         return {"ok": True}
     except Exception as e:

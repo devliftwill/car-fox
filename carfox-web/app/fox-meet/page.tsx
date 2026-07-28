@@ -19,6 +19,12 @@ import FoxDailyCall from "@/components/FoxDailyCall";
 export default function FoxMeetPage() {
   const [ready, setReady] = useState(false);
   const [waking, setWaking] = useState(0);
+  // one identity per page load; the GPU grants its single session to exactly
+  // one holder, so a second bot in the same meeting is refused rather than
+  // allowed to evict this one
+  const [holdId] = useState(() =>
+    typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Math.random()),
+  );
 
   useEffect(() => {
     let stop = false;
@@ -63,7 +69,7 @@ export default function FoxMeetPage() {
         headers: { "Content-Type": "application/json" },
         // hold: renews this bot's exclusive claim on the GPU, so a website
         // visitor cannot evict the fox out of a live meeting
-        body: JSON.stringify({ hold: true }),
+        body: JSON.stringify({ hold: true, hold_id: holdId }),
       }).catch(() => {});
     ping();
     const id = setInterval(ping, 45000);
@@ -83,7 +89,7 @@ export default function FoxMeetPage() {
     >
       {ready ? (
         // autoStart: no human will ever press a button inside a bot's browser
-        <FoxDailyCall avatarId="fox_ditto" autoStart />
+        <FoxDailyCall avatarId="fox_ditto" autoStart holdId={holdId} />
       ) : (
         <div className="fox-live-frame" style={{ width: "min(88vmin, 720px)", aspectRatio: "1 / 1" }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}

@@ -15,11 +15,16 @@ import FoxPipecatCall from "./FoxPipecatCall";
 export default function FoxDailyCall({
   avatarId,
   autoStart = false,
+  holdId,
 }: {
   avatarId: string;
   /** Begin the call on mount. For the meeting-bot surface, where the page is
    *  rendered inside a bot's browser and nobody can press a button. */
   autoStart?: boolean;
+  /** Identifies this page's claim on the single-session GPU. Two bots in the
+   *  same meeting each asking to "hold" used to evict one another forever;
+   *  with an owner, the second one is told the box is busy instead. */
+  holdId?: string;
 }) {
   const [phase, setPhase] = useState<"idle" | "connecting" | "live" | "error" | "fallback">("idle");
   const [status, setStatus] = useState("");
@@ -59,21 +64,79 @@ export default function FoxDailyCall({
    * anywhere saying "no microphone". Beacon what we got, and meter it so a
    * silent room and a dead device are distinguishable.
    */
+  /** RMS of a stream over `ms`, so "is anything actually on this wire" is a
+   *  number instead of an assumption. */
+  async function measure(stream: MediaStream, ms: number): Promise<number> {
+    const ctx = new AudioContext();
+    try {
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      const buf = new Float32Array(analyser.fftSize);
+      let peak = 0;
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        analyser.getFloatTimeDomainData(buf);
+        for (const v of buf) peak = Math.max(peak, Math.abs(v));
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return peak;
+    } finally {
+      void ctx.close();
+    }
+  }
+
   async function captureMeetingAudio(): Promise<MediaStreamTrack | null> {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          // AEC matters here: this page also PLAYS the fox, and that playback
-          // is what Recall pipes into the meeting. Without cancellation the
-          // fox can hear his own voice and interrupt himself mid-sentence.
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      // RAW. Recall's virtual mic already carries conference-processed audio,
+      // and Chrome's own AEC/noise-suppression on top of a virtual device is
+      // the prime suspect for the dead-silent capture we measured in a live
+      // meeting: a live track, correct device, peak 4e-05 — orders of
+      // magnitude below any real room's noise floor. Nothing to cancel here
+      // anyway; the fox's voice is never mixed back into this input.
+      const RAW = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: RAW });
       micRef.current = stream;
-      const track = stream.getAudioTracks()[0] ?? null;
-      beacon("mic_ok", { label: track?.label?.slice(0, 40), state: track?.readyState });
+      let track = stream.getAudioTracks()[0] ?? null;
+
+      // Which inputs exist at all? Labels are only readable after a grant,
+      // so this has to come after getUserMedia. If the default device turns
+      // out to be the silent one, the meeting audio may be on another.
+      const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(
+        (d) => d.kind === "audioinput",
+      );
+      beacon("mic_ok", {
+        label: track?.label?.slice(0, 40),
+        state: track?.readyState,
+        inputs: inputs.map((d) => `${d.deviceId.slice(0, 8)}:${d.label.slice(0, 24)}`),
+      });
+
+      // Self-heal: if the chosen input is digitally silent, walk the other
+      // inputs and keep the first one carrying signal. Silence during this
+      // window is ambiguous (nobody may be talking), so only a device that is
+      // BELOW the floor of even an empty room gets abandoned.
+      if (inputs.length > 1 && (await measure(stream, 4000)) < 1e-4) {
+        for (const d of inputs) {
+          if (d.deviceId === track?.getSettings().deviceId) continue;
+          try {
+            const alt = await navigator.mediaDevices.getUserMedia({
+              audio: { ...RAW, deviceId: { exact: d.deviceId } },
+            });
+            const peak = await measure(alt, 3000);
+            beacon("mic_probe", { dev: d.label.slice(0, 24), peak: +peak.toFixed(6) });
+            if (peak >= 1e-4) {
+              micRef.current?.getTracks().forEach((t) => t.stop());
+              micRef.current = alt;
+              track = alt.getAudioTracks()[0] ?? track;
+              beacon("mic_switched", { to: d.label.slice(0, 24) });
+              break;
+            }
+            alt.getTracks().forEach((t) => t.stop());
+          } catch {
+            /* device may be unopenable; try the next */
+          }
+        }
+      }
 
       // Rolling level, reported every 10s. This is the page-side half of the
       // /health "ear" figure on the GPU; together they localise silence to
@@ -81,7 +144,8 @@ export default function FoxDailyCall({
       const ctx = new AudioContext();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
-      ctx.createMediaStreamSource(stream).connect(analyser);
+      // whichever stream we settled on above, not necessarily the first
+      ctx.createMediaStreamSource(micRef.current ?? stream).connect(analyser);
       const buf = new Float32Array(analyser.fftSize);
       let peak = 0;
       let voiced = 0;
@@ -141,7 +205,7 @@ export default function FoxDailyCall({
         headers: { "Content-Type": "application/json" },
         // hold: a meeting owns the box outright — a passer-by on the website
         // must not be able to evict a live call (the GPU runs one at a time)
-        body: JSON.stringify({ avatar_id: avatarId, hold: autoStart }),
+        body: JSON.stringify({ avatar_id: avatarId, hold: autoStart, hold_id: holdId ?? "" }),
       });
       const seat = await r.json();
       if (seat?.error === "daily_not_configured") {
