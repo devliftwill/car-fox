@@ -61,7 +61,9 @@ export default function FoxMeetPage() {
       void fetch("/api/neural/pipecat?path=keepalive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        // hold: renews this bot's exclusive claim on the GPU, so a website
+        // visitor cannot evict the fox out of a live meeting
+        body: JSON.stringify({ hold: true }),
       }).catch(() => {});
     ping();
     const id = setInterval(ping, 45000);

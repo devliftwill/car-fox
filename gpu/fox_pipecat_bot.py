@@ -21,7 +21,7 @@ from loguru import logger
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import InputAudioRawFrame, LLMRunFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.pipeline.pipeline import Pipeline
@@ -145,6 +145,52 @@ class _TestBars(FrameProcessor):
 
 
 
+class _EarLevel(FrameProcessor):
+    """Proves the fox can HEAR whoever he is talking to.
+
+    Passive: every inbound audio frame's RMS is folded into a rolling figure
+    that /health reports, and the frame is passed straight through.
+
+    This exists because "deaf" and "listening to a silent room" look
+    identical from outside the box. A meeting bot that never answers a
+    question could be failing at the mic, the transport, Gemini, or the
+    speaker, and without a number here the only way to tell them apart was
+    to ask a human to talk to it and see. That guesswork cost most of a day.
+    """
+
+    def __init__(self):
+        super().__init__()
+        _current["ear"] = {"frames": 0, "rms": 0.0, "peak": 0.0, "voiced": 0, "last_s": 0.0}
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame) and frame.audio:
+            try:
+                import numpy as _np
+
+                pcm = _np.frombuffer(frame.audio, dtype=_np.int16).astype(_np.float32)
+                if pcm.size:
+                    rms = float(_np.sqrt((pcm * pcm).mean())) / 32768.0
+                    ear = _current.setdefault(
+                        "ear", {"frames": 0, "rms": 0.0, "peak": 0.0, "voiced": 0, "last_s": 0.0}
+                    )
+                    ear["frames"] += 1
+                    ear["rms"] = round(0.9 * ear["rms"] + 0.1 * rms, 5)
+                    ear["peak"] = round(max(ear["peak"], rms), 5)
+                    # -46 dBFS: comfortably above line noise, below speech
+                    if rms > 0.005:
+                        ear["voiced"] += 1
+                    ear["last_s"] = round(time.time(), 1)
+                    if ear["frames"] % 250 == 1:
+                        logger.info(
+                            f"carfox-ear: frames={ear['frames']} rms={ear['rms']} "
+                            f"peak={ear['peak']} voiced={ear['voiced']}"
+                        )
+            except Exception:
+                pass  # a metering fault must never break the voice path
+        await self.push_frame(frame, direction)
+
+
 class _DropAudio(FrameProcessor):
     """FOX_TEST_BARS=3 diagnostic: discards downstream audio so the
     transport sees ditto's video cadence but none of its audio."""
@@ -212,6 +258,7 @@ def _build_pipeline(transport, source: str):
         video_chain = [ditto, pacer]
     pipeline = Pipeline([
         transport.input(),
+        _EarLevel(),
         user_agg,
         llm,
         *video_chain,
@@ -278,6 +325,18 @@ async def daily_start(body: dict):
     source = _resolve_source(avatar_id)
     if source is None:
         return {"error": f"unknown character avatar {avatar_id}"}
+
+    # A100 = ONE avatar pipeline (measured: a second concurrent session halves
+    # both). Normally a new caller evicts the old one, which is fine for two
+    # people trying the website. It is NOT fine mid-meeting: anyone who opened
+    # car-fox.vercel.app would silently kill the fox in front of a room of
+    # people. A held session refuses newcomers instead of yielding to them.
+    hold = bool(body.get("hold"))
+    if _current.get("hold_until", 0) > time.time() and not hold:
+        logger.info("pipecat[daily]: refusing start — a meeting holds this box")
+        return {"error": "busy"}
+    if hold:
+        _current["hold_until"] = time.time() + 180
 
     await _teardown_current()
 
@@ -423,6 +482,7 @@ async def daily_start(body: dict):
         # power the machine down.
         if _current.get("task") is task:
             _current["task"] = None
+            _current["hold_until"] = 0  # the meeting is over; the box is free
             logger.info("pipecat[daily]: session finished — now idle")
             _dump_session()
 
@@ -567,6 +627,10 @@ async def keepalive(body: dict = None):
     try:
         with open("/var/tmp/fox-keep-awake", "w") as f:
             f.write(str(time.time()))
+        # a meeting bot renews its claim on the box with every ping, so the
+        # hold dies ~3 minutes after the bot leaves the call
+        if (body or {}).get("hold"):
+            _current["hold_until"] = time.time() + 180
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)[:120]}
@@ -660,7 +724,17 @@ async def get_turns():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "active": _current.get("task") is not None}
+    held = _current.get("hold_until", 0)
+    return {
+        "ok": True,
+        "active": _current.get("task") is not None,
+        # held == a meeting bot owns this box; website visitors get "busy"
+        # instead of evicting the call (see daily_start)
+        "held": held > time.time(),
+        # what the fox is hearing right now — the fastest way to tell a deaf
+        # session from a quiet one without joining the call yourself
+        "ear": _current.get("ear", {}),
+    }
 
 
 if __name__ == "__main__":

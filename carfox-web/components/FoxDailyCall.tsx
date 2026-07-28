@@ -27,6 +27,7 @@ export default function FoxDailyCall({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const callRef = useRef<DailyCall | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const micRef = useRef<MediaStream | null>(null);
 
   function beacon(event: string, data: Record<string, unknown> = {}) {
     void fetch("/api/neural/pipecat?path=telemetry", {
@@ -41,8 +42,69 @@ export default function FoxDailyCall({
       const call = callRef.current;
       callRef.current = null;
       if (call) void call.leave().then(() => call.destroy()).catch(() => {});
+      micRef.current?.getTracks().forEach((t) => t.stop());
+      micRef.current = null;
     };
   }, []);
+
+  /**
+   * THE EAR. Recall.ai feeds the meeting's mixed audio to this page as a
+   * microphone, so getUserMedia here IS everyone in the meeting talking, and
+   * publishing it into the Daily room is what lets the fox hear them.
+   *
+   * Done explicitly rather than leaving it to Daily's default capture for one
+   * reason: when it fails it has to fail LOUDLY. The old code fell back to a
+   * listen-only seat inside a catch, which produced a fox that joined, looked
+   * perfect, spoke its intro and then ignored every question — with nothing
+   * anywhere saying "no microphone". Beacon what we got, and meter it so a
+   * silent room and a dead device are distinguishable.
+   */
+  async function captureMeetingAudio(): Promise<MediaStreamTrack | null> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          // AEC matters here: this page also PLAYS the fox, and that playback
+          // is what Recall pipes into the meeting. Without cancellation the
+          // fox can hear his own voice and interrupt himself mid-sentence.
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      micRef.current = stream;
+      const track = stream.getAudioTracks()[0] ?? null;
+      beacon("mic_ok", { label: track?.label?.slice(0, 40), state: track?.readyState });
+
+      // Rolling level, reported every 10s. This is the page-side half of the
+      // /health "ear" figure on the GPU; together they localise silence to
+      // either the meeting->page hop or the page->fox hop.
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      const buf = new Float32Array(analyser.fftSize);
+      let peak = 0;
+      let voiced = 0;
+      let n = 0;
+      const id = setInterval(() => {
+        analyser.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (const v of buf) sum += v * v;
+        const rms = Math.sqrt(sum / buf.length);
+        peak = Math.max(peak, rms);
+        if (rms > 0.005) voiced++;
+        if (++n % 20 === 0) beacon("mic_level", { rms: +rms.toFixed(5), peak: +peak.toFixed(5), voiced, n });
+      }, 500);
+      track?.addEventListener("ended", () => {
+        clearInterval(id);
+        beacon("mic_ended", {});
+      });
+      return track;
+    } catch (e) {
+      beacon("mic_failed", { err: String((e as Error)?.name ?? e) });
+      return null;
+    }
+  }
 
   function attachTrack(track: MediaStreamTrack) {
     const v = videoRef.current;
@@ -69,14 +131,26 @@ export default function FoxDailyCall({
     setPhase("connecting");
     setStatus("Connecting to the fox…");
     try {
+      // On the bot surface, take the meeting's audio BEFORE asking for a room:
+      // if there is no ear there is no conversation, and finding that out
+      // after the fox is already on screen helps nobody.
+      const micTrack = autoStart ? await captureMeetingAudio() : null;
+
       const r = await fetch("/api/neural/pipecat?path=daily/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatar_id: avatarId }),
+        // hold: a meeting owns the box outright — a passer-by on the website
+        // must not be able to evict a live call (the GPU runs one at a time)
+        body: JSON.stringify({ avatar_id: avatarId, hold: autoStart }),
       });
       const seat = await r.json();
       if (seat?.error === "daily_not_configured") {
         setPhase("fallback");
+        return;
+      }
+      if (seat?.error === "busy") {
+        setPhase("error");
+        setStatus("The fox is on another call right now — try again in a minute.");
         return;
       }
       if (!r.ok || !seat?.room_url) throw new Error(seat?.error ?? `daily start failed (${r.status})`);
@@ -92,10 +166,31 @@ export default function FoxDailyCall({
       call.on("error", (ev) => console.warn("[fox] daily error:", ev));
 
       try {
-        await call.join({ url: seat.room_url, token: seat.token, startVideoOff: true });
-      } catch {
-        // no mic available (or permission denied) — take a listen-only seat
+        await call.join({
+          url: seat.room_url,
+          token: seat.token,
+          startVideoOff: true,
+          // the bot surface publishes the meeting audio it just captured;
+          // everywhere else Daily picks the user's own microphone as usual
+          ...(micTrack ? { audioSource: micTrack } : {}),
+        });
+      } catch (joinErr) {
+        // A listen-only seat is a DEAF fox. Acceptable for a human visitor who
+        // declined mic permission (they can still watch); never silently
+        // acceptable for the meeting bot, so say so out loud.
+        beacon("join_retry_listen_only", { err: String((joinErr as Error)?.name ?? joinErr), autoStart });
         await call.join({ url: seat.room_url, token: seat.token, startVideoOff: true, audioSource: false });
+      }
+
+      // Confirm the ear survived the join — Daily can accept a track and still
+      // end up publishing nothing (muted seat, device grabbed elsewhere).
+      try {
+        const me = call.participants()?.local;
+        const audio = me?.tracks?.audio;
+        beacon("mic_published", { state: audio?.state, off: !me?.audio });
+        if (autoStart && audio?.state !== "playable") call.setLocalAudio(true);
+      } catch {
+        /* participants() is best-effort telemetry, never a call blocker */
       }
 
       // LOADER UNTIL THE FOX ACTUALLY MOVES: while the engine primes, the
